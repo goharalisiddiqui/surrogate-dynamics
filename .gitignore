@@ -4,7 +4,9 @@ core
 run*/
 *train*/
 sd_training*/
-run.sh
+sd_prediction*/
+run_predict.sh
+run_train.sh
 run_slurm.sh
 run_multi.sh
 saved_runs/

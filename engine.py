@@ -36,6 +36,8 @@ def parse_args():
     parser.add_argument('--dynamics', type=str, default='XTC', help='Type of dynamics data', choices=['XTC'])
     parser.add_argument('--enc_ckpt', required=True, type=str, help='Saved PL module of encoder')
     parser.add_argument('--nepochs', type=int, help='Number of epochs to run')
+    parser.add_argument('--tft_train_size', required=True, type=int, help='Number of series to train on')
+    parser.add_argument('--tft_validation_size', required=True, type=int, help='Number of series in validation set')
 
 
     # Output Settings
@@ -160,20 +162,20 @@ Outputs: latent space variables
 
 
 data_nested_args = vars(data_nested_args())
-data_nested_args["dataset_size"] = 100
 data_nested_args["sequential"] = True
 data_nested_args["verbose"] = False
 series_list = []
 enc.metaD = True
-for i in range(10):
+n_series = args.tft_train_size + args.tft_validation_size
+for i in range(n_series):
     data = main_dl(**data_nested_args).get_full_batch()[0]
     encoded = enc(data)[0].detach().cpu().numpy()
     endoded = encoded.reshape(encoded.shape[0], -1)
-    series = TimeSeries.from_values(encoded)#all training data convertd to time series type
+    series = TimeSeries.from_values(encoded)
     series_list.append(series)
 
-train_series = series_list[:7]
-val_series = series_list[7:]
+train_series = series_list[:args.tft_train_size]
+val_series = series_list[args.tft_train_size:]
 
 
 ##################################
@@ -202,19 +204,13 @@ if args.propagator == "TFT":
                                 }
                                 # "callbacks": [loss_logger],
 
-
-    prop_args
-
 dyn_surrogate_args = prop_args | vars(dyn_surrogate_args)
-
 prop_model = dyn_surrogate(**dyn_surrogate_args)
+
 
 #########################################
 # Training the Surrogate Propagator
-#########################################
-
-
-
+#########################################\
 prop_model.fit(series=train_series, val_series=val_series, verbose=True)
 #########################################
 # Saving the best model
