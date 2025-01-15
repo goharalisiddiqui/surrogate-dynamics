@@ -30,30 +30,44 @@ def parse_args():
     desc = "Surrogate model to predict dynamics of molecular systems as time series data"
     parser = argparse.ArgumentParser(description=desc)
 
-    ## Run Settings
-    parser.add_argument('--propagator', type=str, default='TFT', help='Type of propagator', choices=['TFT'])
-    parser.add_argument('--encoder', type=str, default='EDVAE', help='Type of encoder', choices=['EDVAE'])
-    parser.add_argument('--dynamics', type=str, default='XTC', help='Type of dynamics data', choices=['XTC'])
-    parser.add_argument('--enc_ckpt', required=True, type=str, help='Saved PL module of encoder')
-    parser.add_argument('--prop_ckpt', required=True, type=str, help='Saved PL module of propagator')
+    # Run Settings
+    parser.add_argument('--propagator', type=str, default='TFT',
+                        help='Type of propagator', choices=['TFT'])
+    parser.add_argument('--encoder', type=str, default='EDVAE',
+                        help='Type of encoder', choices=['EDVAE', 'FLATEMB'])
+    parser.add_argument('--dynamics', type=str, default='XTC',
+                        help='Type of dynamics data', choices=['XTC'])
+    parser.add_argument('--enc_ckpt', required=True,
+                        type=str, help='Saved PL module of encoder')
+    parser.add_argument('--prop_model', required=True,
+                        type=str, help='Saved PL model name of propagator')
 
     # Output Settings
-    parser.add_argument('--outpath', required=True, type=str, help='Output folder for saving the training output')
-    parser.add_argument('--outfolder', type=str, default='sd_prediction', help='Stem of the folder name to save the output')
-    parser.add_argument('--nexp', required=False, default=1, type=int, help='Experiment number for output names')
-    parser.add_argument('--overwrite', action="store_true", help='Overwrite output folder')
-    parser.add_argument('--output_to_file', action="store_true", help='Also store output in a file')
+    parser.add_argument('--outpath', required=True, type=str,
+                        help='Output folder for saving the training output')
+    parser.add_argument('--outfolder', type=str, default='sd_prediction',
+                        help='Stem of the folder name to save the output')
+    parser.add_argument('--nexp', required=False, default=1,
+                        type=int, help='Experiment number for output names')
+    parser.add_argument('--overwrite', action="store_true",
+                        help='Overwrite output folder')
+    parser.add_argument('--output_to_file', action="store_true",
+                        help='Also store output in a file')
 
     # Save and/or Load Model
-    parser.add_argument('--save_checkpoint', action="store_true", help='Save Checkpoint')
-    parser.add_argument('--load_model', default=None, type=str, help='Load model from checkpoint')
+    parser.add_argument('--save_checkpoint',
+                        action="store_true", help='Save Checkpoint')
+    parser.add_argument('--load_model', default=None,
+                        type=str, help='Load model from checkpoint')
 
     # Run parameters
-    parser.add_argument('--nogpu', action="store_true", help='Do not use gpu acceleration')
+    parser.add_argument('--nogpu', action="store_true",
+                        help='Do not use gpu acceleration')
 
     args, _ = parser.parse_known_args()
 
     return args
+
 
 args = parse_args()
 
@@ -67,6 +81,8 @@ else:
     raise ValueError("Unknown propagator type")
 if args.encoder == "EDVAE":
     from nets.edvae_net import EDVAE as enc_model
+elif args.encoder == "FLATEMB":
+    from embeddings.flatemb import FlatEmb as enc_model
 else:
     raise ValueError("Unknown encoder type")
 
@@ -107,7 +123,8 @@ if args.output_to_file:
     import sys
     import subprocess
     print("Redirecting output to file "+odir_name+"/out.txt")
-    tee = subprocess.Popen(["tee", odir_name+"/out.txt"], stdin=subprocess.PIPE)
+    tee = subprocess.Popen(
+        ["tee", odir_name+"/out.txt"], stdin=subprocess.PIPE)
     # Cause tee's stdin to get a copy of our stdin/stdout (as well as that
     # of any child processes we spawn)
     os.dup2(tee.stdin.fileno(), sys.stdout.fileno())
@@ -116,39 +133,47 @@ if args.output_to_file:
 ##################################
 # Loding trained encoder model
 ##################################
-enc = enc_model.load_from_checkpoint(args.enc_ckpt)
-enc.metaD = True
+if args.encoder == "EDVAE":
+    assert args.enc_ckpt is not None, "EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option"
+    enc = enc_model.load_from_checkpoint(args.enc_ckpt)
+    enc.metaD = True
+elif args.encoder == "FLATEMB":
+    enc = enc_model()
+else:
+    raise ValueError("Unknown encoder type")
 
 ##################################
 # Loding trained propagator model
 ##################################
-prop = dyn_surrogate.load_from_checkpoint(model_name='sd_training', best=True)
+prop_name = "_".join(args.prop_model.split('_')[:-1])
+prop = dyn_surrogate.load_from_checkpoint(
+    model_name=prop_name, work_dir=args.prop_model, best=True)
 ##################################
 # Creating Dataset
 ##################################
-
-
+# Disable wandb logging since it fails on predict
+prop.trainer_params['logger'] = None
 
 data_nested_args = vars(PredictorData_args())
 data_nested_args['verbose'] = True
 pdata = PredictorData(**data_nested_args)
-warmup_steps = pdata.get_warmup_steps(100)
 
-encoded_warmup_steps = enc.get_latent(warmup_steps[0])
-encoded_warmup_steps = encoded_warmup_steps[0] # taking only the mean of VAE latent variables
+nsteps_warmup = 100
+nsteps_to_predict = len(pdata) - nsteps_warmup
+
+warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
+encoded_warmup_steps = enc.get_latent_mean(warmup_steps)
 
 warmup_series = TimeSeries.from_values(encoded_warmup_steps)
-
-predicted_steps = prop.predict(series=warmup_series, n=100, num_samples=100)
+predicted_steps = prop.predict(
+    series=warmup_series, n=nsteps_to_predict, num_samples=100)
 predicted_steps = predicted_steps.all_values()
 predicted_steps = torch.tensor(predicted_steps)
 predicted_steps = torch.mean(predicted_steps, 2)
 
 predicted_steps = enc.decode_latent(predicted_steps)
-
 pdata.extend_trajectory(predicted_steps)
 # np.set_printoptions(threshold=sys.maxsize)
 # print(pdata.get_coordinates())
-pdata.output_trajectory(output_file_stem +"predicted.pdb")
 
-
+pdata.output_trajectory(output_file_stem)
