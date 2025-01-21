@@ -45,6 +45,8 @@ def parse_args():
                         type=int, help='Number of series to train on')
     parser.add_argument('--tft_validation_size', required=True,
                         type=int, help='Number of series in validation set')
+    parser.add_argument('--tft_seq_length', required=True,
+                        type=int, help='Number of frames if a series')
 
     # Output Settings
     parser.add_argument('--outpath', required=True, type=str,
@@ -76,6 +78,8 @@ def parse_args():
                         help='Learning rate for the training')
     parser.add_argument('--scheduler', action="store_true",
                         help='Use learning rate scheduler')
+    parser.add_argument('--nolog', action="store_true",
+                        help='Dont log to wandb')
     # parser.add_argument('--l2norm', type=float, default=1e-3, help='Weights regularization for the training')
     # parser.add_argument('--nobatchnorm', action="store_false", help='Disable batch normalization in the network')
 
@@ -92,6 +96,7 @@ args = parse_args()
 if args.propagator == "TFT":
     from propagators.tft_net import TFTModel as dyn_surrogate
     from propagators.tft_net import TFT_args as dyn_surrogate_args
+    from propagators.tft_net import ModifiedQuantileRegression as QuantileRegression
 else:
     raise ValueError("Unknown propagator type")
 if args.encoder == "EDVAE":
@@ -157,15 +162,20 @@ else:
 # Creating Dataset
 ##################################
 
+n_series = args.tft_train_size + args.tft_validation_size
+seq_len = args.tft_seq_length
+
 data_nested_args = vars(data_nested_args())
 data_nested_args["sequential"] = True
-data_nested_args["verbose"] = False
-series_list = []
+data_nested_args["verbose"] = True
+data_nested_args["dataset_size"] = n_series * seq_len
 # enc.metaD = True # Use this for old VAE models
-n_series = args.tft_train_size + args.tft_validation_size
+data_set = main_dl(**data_nested_args)
+alldata = data_set.get_full_batch()[0]
+series_list = []
 for i in range(n_series):
-    data = main_dl(**data_nested_args).get_full_batch()[0]
-    encoded = enc.get_latent_mean(data).detach().cpu().numpy()
+    traj = alldata[i*seq_len:(i+1)*seq_len]
+    encoded = enc.get_latent_mean(traj)
     endoded = encoded.reshape(encoded.shape[0], -1)
     series = TimeSeries.from_values(encoded)
     series_list.append(series)
@@ -178,12 +188,20 @@ val_series = series_list[args.tft_train_size:]
 # Initilizing Surrogate Propagator
 ##################################
 
-dyn_surrogate_args = dyn_surrogate_args()
+dyn_surrogate_args = {} | vars(dyn_surrogate_args())
 prop_args = {}
 
 if args.propagator == "TFT":
+    dyn_surrogate_args["input_chunk_length"] = 10
+    dyn_surrogate_args["output_chunk_length"] = 10
+    dyn_surrogate_args["hidden_size"] = 96
+    dyn_surrogate_args["lstm_layers"] = 2
+    dyn_surrogate_args["num_attention_heads"] = 1
+    dyn_surrogate_args["dropout"] = 0.02
+    dyn_surrogate_args["batch_size"] = 16
+
     prop_args['n_epochs'] = args.nepochs
-    # this needs to be true becaue i do not have covariant data
+    # Marco: this needs to be true becaue i do not have covariant data
     prop_args['add_relative_index'] = True
     prop_args['add_encoders'] = None
     prop_args['optimizer_kwargs'] = {"lr": args.lrate}
@@ -203,9 +221,9 @@ if args.propagator == "TFT":
     prop_args['save_checkpoints'] = True
     prop_args['work_dir'] = odir_name
 
-    q = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4,
-         0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
-    prop_args['likelihood'] = QuantileRegression(quantiles=q)
+    q = [0.25, 0.5, 0.75]
+    prop_args['likelihood'] = QuantileRegression(
+        quantiles=q, enc_ckpt=args.enc_ckpt, elems=data_set.loe)
 
     #########################################
     # Setup wandb logger
@@ -214,12 +232,16 @@ if args.propagator == "TFT":
     for key, value in vars(args).items():
         wandb_config[key] = value
     #########################################
-    logger = WandbLogger(project="DynSurrogate",
-                         name=odir_name, config=wandb_config)
+    if args.nolog:
+        logger = None
+    else:
+        logger = WandbLogger(project="DynSurrogate",
+                             name=odir_name, config=wandb_config)
     earty_stop = EarlyStopping(monitor='val_loss',
                                mode='min',
                                patience=10,
-                               min_delta=0.01,
+                               min_delta=0.001,
+                               verbose=True,
                                )
 
     prop_args['pl_trainer_kwargs'] = {
@@ -230,18 +252,19 @@ if args.propagator == "TFT":
     }
 
 
-dyn_surrogate_args = prop_args | vars(dyn_surrogate_args)
+dyn_surrogate_args = prop_args | dyn_surrogate_args
 prop_model = dyn_surrogate(**dyn_surrogate_args)
 
 
 #########################################
 # Training the Surrogate Propagator
 # \
-prop_model.fit(series=train_series, val_series=val_series, verbose=True)
+prop_model.fit(series=train_series, past_covariates=train_series,
+               val_series=val_series, val_past_covariates=val_series, verbose=True)
 wandb.finish()
 #########################################
 # Saving the best model
 #########################################
 best_model = prop_model.load_from_checkpoint(
-    model_name=prop_args['model_name'], best=True)
-best_model.save(output_file_stem + "best")
+    model_name=prop_args['model_name'], work_dir=odir_name, best=True)
+best_model.save(output_file_stem + "best.ckpt")

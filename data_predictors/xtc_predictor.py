@@ -58,8 +58,8 @@ def xtcpdatset_args():
                         help='Input binary file containing the topology')
     parser.add_argument('--resnames', required=True, nargs='+',
                         help='Residue names to get the coordinates')
-    parser.add_argument('--datasize', dest="dataset_size",
-                        type=int, default=None, help='Size of the dataset to use')
+    # parser.add_argument('--datasize', dest="dataset_size",
+    #                     type=int, default=None, help='Size of the dataset to use')
     # parser.add_argument('--labels',dest = 'label_list', nargs='+', help='Label columns in the data file')
 
     args, _ = parser.parse_known_args()
@@ -107,7 +107,10 @@ class XtcPredictor():
         mol_traj = []
         s, e = 0, len(u.trajectory)
         if dataset_size is not None:
-            s = random.randint(0, len(u.trajectory) - dataset_size - 1)
+            if dataset_size > len(u.trajectory):
+                raise ValueError(
+                    f"Not enough frames in the trajectory. Requested: {dataset_size}, Available: {len(u.trajectory)}")
+            s = random.randint(0, len(u.trajectory) - dataset_size)
             e = dataset_size + s
         print(f"Reading trajectory of {e-s} frames...") if verbose else None
         for ts in tqdm(u.trajectory[s:e], disable=not verbose):

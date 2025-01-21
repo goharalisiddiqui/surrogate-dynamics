@@ -1,23 +1,13 @@
-import warnings
-import time
-import sys
 import os
+import sys
 import argparse
 
-import numpy as np
+import torch
 
-import pandas as pd
-
-from darts import TimeSeries, concatenate
-from darts.dataprocessing.transformers import Scaler
-from darts.models import TFTModel
-from darts.metrics import mape
-from darts.utils.likelihood_models import QuantileRegression
+from darts import TimeSeries
 
 from utils import *
 
-import torch
-import pytorch_lightning as pl
 
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
 sys.path.append(os.path.dirname(os.getcwd() + '/propagators/'))
@@ -54,11 +44,17 @@ def parse_args():
     parser.add_argument('--output_to_file', action="store_true",
                         help='Also store output in a file')
 
+    # Prediction settings
+    parser.add_argument('--n_warmup', type=int, default=0,
+                        help='Number of warmup steps to use for prediction')
+    parser.add_argument('--n_predict', type=int, default=0,
+                        help='Number of warmup steps to use for prediction')
+
     # Save and/or Load Model
-    parser.add_argument('--save_checkpoint',
-                        action="store_true", help='Save Checkpoint')
-    parser.add_argument('--load_model', default=None,
-                        type=str, help='Load model from checkpoint')
+    # parser.add_argument('--save_checkpoint',
+    #                     action="store_true", help='Save Checkpoint')
+    # parser.add_argument('--load_model', default=None,
+    #                     type=str, help='Load model from checkpoint')
 
     # Run parameters
     parser.add_argument('--nogpu', action="store_true",
@@ -136,7 +132,8 @@ if args.output_to_file:
 if args.encoder == "EDVAE":
     assert args.enc_ckpt is not None, "EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option"
     enc = enc_model.load_from_checkpoint(args.enc_ckpt)
-    enc.metaD = True
+    print("Loaded encoder model latent dimensionality: ", enc.dim_latent)
+    # enc.metaD = True
 elif args.encoder == "FLATEMB":
     enc = enc_model()
 else:
@@ -156,17 +153,28 @@ prop.trainer_params['logger'] = None
 
 data_nested_args = vars(PredictorData_args())
 data_nested_args['verbose'] = True
+data_nested_args['dataset_size'] = args.n_warmup
 pdata = PredictorData(**data_nested_args)
 
-nsteps_warmup = 100
-nsteps_to_predict = len(pdata) - nsteps_warmup
-
+##################################
+# Prediction
+##################################
+nsteps_warmup = args.n_warmup
+nsteps_to_predict = args.n_predict
+if nsteps_to_predict == 0:
+    nsteps_to_predict = len(pdata)
+if nsteps_warmup == 0:
+    Warning("No warmup steps provided. Using 20% of prediction steps as warmup")
+    nsteps_warmup = int(0.2 * nsteps_to_predict)
+if nsteps_warmup > len(pdata):
+    raise ValueError(
+        "Number of warmup steps should be less than number of data points loaded")
 warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
 encoded_warmup_steps = enc.get_latent_mean(warmup_steps)
 
 warmup_series = TimeSeries.from_values(encoded_warmup_steps)
 predicted_steps = prop.predict(
-    series=warmup_series, n=nsteps_to_predict, num_samples=100)
+    series=warmup_series, past_covariates=warmup_series, n=nsteps_to_predict, num_samples=100)
 predicted_steps = predicted_steps.all_values()
 predicted_steps = torch.tensor(predicted_steps)
 predicted_steps = torch.mean(predicted_steps, 2)

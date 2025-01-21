@@ -35,10 +35,10 @@ class FlatEmb(pl.LightningModule):
 
     def get_latent(self, x):
         x = self.flattern(x)
-        return x, None  # None is for the covariance matrix
+        return x.detach().cpu().numpy(), None  # None is for the covariance matrix
 
     def get_latent_mean(self, x):
-        x = self.flattern(x)
+        x = self.flattern(x).detach().cpu().numpy()
         return x
 
     def decode_latent(self, x):
