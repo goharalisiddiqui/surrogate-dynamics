@@ -27,7 +27,7 @@ def parse_args():
                         help='Type of encoder', choices=['EDVAE', 'FLATEMB'])
     parser.add_argument('--dynamics', type=str, default='XTC',
                         help='Type of dynamics data', choices=['XTC'])
-    parser.add_argument('--enc_ckpt', required=True,
+    parser.add_argument('--enc_ckpt', default=None,
                         type=str, help='Saved PL module of encoder')
     parser.add_argument('--prop_model', required=True,
                         type=str, help='Saved PL model name of propagator')
@@ -48,7 +48,9 @@ def parse_args():
     parser.add_argument('--n_warmup', type=int, default=0,
                         help='Number of warmup steps to use for prediction')
     parser.add_argument('--n_predict', type=int, default=0,
-                        help='Number of warmup steps to use for prediction')
+                        help='Number of steps to predict')
+    parser.add_argument('--n_windows', type=int, default=0,
+                        help='Number of steps to predict')
 
     # Save and/or Load Model
     # parser.add_argument('--save_checkpoint',
@@ -76,6 +78,8 @@ if args.propagator == "TFT":
 else:
     raise ValueError("Unknown propagator type")
 if args.encoder == "EDVAE":
+    if args.enc_ckpt is None:
+        raise ValueError("EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option")
     from nets.edvae_net import EDVAE as enc_model
 elif args.encoder == "FLATEMB":
     from embeddings.flatemb import FlatEmb as enc_model
@@ -151,37 +155,41 @@ prop = dyn_surrogate.load_from_checkpoint(
 # Disable wandb logging since it fails on predict
 prop.trainer_params['logger'] = None
 
+n_predict_windows = args.n_windows
+nsteps_warmup = args.n_warmup
+nsteps_to_predict = args.n_predict
+if nsteps_to_predict == 0:
+    nsteps_to_predict = 100 # FIXME: Get output chunk size from TFT model
+if nsteps_warmup == 0:
+    Warning("No warmup steps provided. Using 20% of prediction steps as warmup")
+    nsteps_warmup = 100 # FIXME: Get input chunk size from TFT model
+
 data_nested_args = vars(PredictorData_args())
 data_nested_args['verbose'] = True
-data_nested_args['dataset_size'] = args.n_warmup
+data_nested_args['dataset_size'] = n_predict_windows * (nsteps_warmup + nsteps_to_predict)
 pdata = PredictorData(**data_nested_args)
 
 ##################################
 # Prediction
 ##################################
-nsteps_warmup = args.n_warmup
-nsteps_to_predict = args.n_predict
-if nsteps_to_predict == 0:
-    nsteps_to_predict = len(pdata)
-if nsteps_warmup == 0:
-    Warning("No warmup steps provided. Using 20% of prediction steps as warmup")
-    nsteps_warmup = int(0.2 * nsteps_to_predict)
-if nsteps_warmup > len(pdata):
-    raise ValueError(
-        "Number of warmup steps should be less than number of data points loaded")
-warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
-encoded_warmup_steps = enc.get_latent_mean(warmup_steps)
+for i in range(n_predict_windows):
+    print(f"Predicting window {i+1}/{n_predict_windows}")
+    warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
+    encoded_warmup_steps = enc.get_latent_mean(warmup_steps)
 
-warmup_series = TimeSeries.from_values(encoded_warmup_steps)
-predicted_steps = prop.predict(
-    series=warmup_series, past_covariates=warmup_series, n=nsteps_to_predict, num_samples=100)
-predicted_steps = predicted_steps.all_values()
-predicted_steps = torch.tensor(predicted_steps)
-predicted_steps = torch.mean(predicted_steps, 2)
+    warmup_series = TimeSeries.from_values(encoded_warmup_steps)
+    # predicted_steps = prop.predict(
+    #     series=warmup_series, past_covariates=warmup_series, n=nsteps_to_predict, num_samples=100)
+    predicted_steps = prop.predict(
+        series=warmup_series, n=nsteps_to_predict, num_samples=100)
+    predicted_steps = predicted_steps.all_values()
+    predicted_steps = torch.tensor(predicted_steps)
+    predicted_steps = torch.mean(predicted_steps, 2)
 
-predicted_steps = enc.decode_latent(predicted_steps)
-pdata.extend_trajectory(predicted_steps)
+    predicted_steps = enc.decode_latent(predicted_steps)
+    pdata.extend_trajectory(predicted_steps)
 # np.set_printoptions(threshold=sys.maxsize)
 # print(pdata.get_coordinates())
 
 pdata.output_trajectory(output_file_stem)
+pdata.output_real_trajectory(output_file_stem)

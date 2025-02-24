@@ -18,3 +18,4 @@ lightning_logs/
 *test*
 md17_data/
 darts_logs/
+saved_runs/

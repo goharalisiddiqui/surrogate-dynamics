@@ -192,10 +192,10 @@ dyn_surrogate_args = {} | vars(dyn_surrogate_args())
 prop_args = {}
 
 if args.propagator == "TFT":
-    dyn_surrogate_args["input_chunk_length"] = 10
-    dyn_surrogate_args["output_chunk_length"] = 10
-    dyn_surrogate_args["hidden_size"] = 96
-    dyn_surrogate_args["lstm_layers"] = 2
+    dyn_surrogate_args["input_chunk_length"] = 100
+    dyn_surrogate_args["output_chunk_length"] = 100
+    dyn_surrogate_args["hidden_size"] = 256
+    dyn_surrogate_args["lstm_layers"] = 3
     dyn_surrogate_args["num_attention_heads"] = 1
     dyn_surrogate_args["dropout"] = 0.02
     dyn_surrogate_args["batch_size"] = 16
@@ -205,9 +205,9 @@ if args.propagator == "TFT":
     prop_args['add_relative_index'] = True
     prop_args['add_encoders'] = None
     prop_args['optimizer_kwargs'] = {"lr": args.lrate}
-    if args.scheduler:
+    if args.scheduler:        
         prop_args['lr_scheduler_cls'] = torch.optim.lr_scheduler.ReduceLROnPlateau
-        prop_args['lr_scheduler_kwargs'] = {"mode": "min",
+        prop_args['lr_scheduler_kwargs'] = {"mode": "min",                  
                                             "factor": 0.8,
                                             "patience": 3,
                                             "min_lr": 1e-10,
@@ -221,9 +221,12 @@ if args.propagator == "TFT":
     prop_args['save_checkpoints'] = True
     prop_args['work_dir'] = odir_name
 
-    q = [0.25, 0.5, 0.75]
+    # q = [0.25, 0.5, 0.75]
+    q = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4,
+         0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
+
     prop_args['likelihood'] = QuantileRegression(
-        quantiles=q, enc_ckpt=args.enc_ckpt, elems=data_set.loe)
+        quantiles=q, enc_ckpt=args.enc_ckpt, elems=data_set.loatn, bond_connections=data_set.bonds)
 
     #########################################
     # Setup wandb logger
@@ -239,7 +242,7 @@ if args.propagator == "TFT":
                              name=odir_name, config=wandb_config)
     earty_stop = EarlyStopping(monitor='val_loss',
                                mode='min',
-                               patience=10,
+                               patience=500,
                                min_delta=0.001,
                                verbose=True,
                                )
@@ -259,8 +262,9 @@ prop_model = dyn_surrogate(**dyn_surrogate_args)
 #########################################
 # Training the Surrogate Propagator
 # \
-prop_model.fit(series=train_series, past_covariates=train_series,
-               val_series=val_series, val_past_covariates=val_series, verbose=True)
+# prop_model.fit(series=train_series, past_covariates=train_series,
+#                val_series=val_series, val_past_covariates=val_series, verbose=True)
+prop_model.fit(series=train_series, val_series=val_series, verbose=True)
 wandb.finish()
 #########################################
 # Saving the best model

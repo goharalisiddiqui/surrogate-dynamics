@@ -6,6 +6,7 @@ from darts.utils.likelihood_models import QuantileRegression
 from torch.nn.functional import pairwise_distance
 
 from nets.edvae_net import EDVAE as enc_model
+from ase.data import covalent_radii
 
 import torch
 from typing import Optional
@@ -40,7 +41,7 @@ TFT_args = tft_args
 
 
 class ModifiedQuantileRegression(QuantileRegression):
-    def __init__(self, quantiles: Optional[list[float]] = None, enc_ckpt: Optional[str] = None, elems: Optional[list[str]] = None):
+    def __init__(self, quantiles: Optional[list[float]] = None, enc_ckpt: Optional[str] = None, elems: Optional[list[int]] = None, bond_connections: Optional[list[tuple[int, int]]] = None):
         """
         The "likelihood" corresponding to quantile regression modified to add additional loss
         It uses the Quantile Loss Metric for custom quantiles centered around q=0.5.
@@ -55,15 +56,122 @@ class ModifiedQuantileRegression(QuantileRegression):
         """
         if enc_ckpt is not None and elems is None:
             raise ValueError("elems must be provided if enc_ckpt is provided")
+        if enc_ckpt is not None and bond_connections is None:
+            raise ValueError(
+                "bond_connections must be provided if enc_ckpt is provided")
 
         super().__init__(quantiles)
         self.encoder = None
         self.enc_ckpt = enc_ckpt
-        self.elems = elems
+        elements = elems
+        cov_radii = [covalent_radii[el] for el in elements]
+        cov_radii = torch.tensor(cov_radii).float()
+        cov_radii = cov_radii.unsqueeze(0)
+        cd_t = cov_radii.transpose(0, 1)
+        cov_mat = cov_radii.unsqueeze(0) + cd_t.unsqueeze(1)
+        self.cov_mat = cov_mat.squeeze(1)
+        self.cov_mat = self.cov_mat 
+        self.bond_indices = bond_connections
 
     def load_encoder(self, enc_ckpt: str):
         self.encoder = enc_model.load_from_checkpoint(enc_ckpt)
         self.encoder.eval()
+
+    # def compute_covalent_loss(self, enc_latent: torch.Tensor):
+    #     x = self.encoder.decode_latent(
+    #         enc_latent.view(-1, enc_latent.shape[-1]), keeptensor=True)
+    #     n_atoms = x.shape[-2]
+    #     x = x.reshape(-1, n_atoms, 3)
+    #     x = x.unsqueeze(1)
+    #     x_t = x.transpose(1, 2)
+    #     diff = x.unsqueeze(1) - x_t.unsqueeze(2)
+    #     diff = diff.squeeze(2)
+    #     diff = diff ** 2
+    #     diff = diff.sum(-1)
+    #     dist = diff.sqrt()
+    #     cov_deviations = dist / self.cov_mat
+
+    #     # Maximum distance between atoms should be 2 x covalent radius
+    #     # mask = cov_deviations < 2.0
+    #     # cov_deviations[mask] = 1.0
+
+    #     # Diagonal elements should not be considered
+    #     mask = torch.eye(cov_deviations.shape[1]).bool().unsqueeze(0).repeat(
+    #         cov_deviations.shape[0], 1, 1)
+    #     cov_deviations[mask] = 1.0
+
+    #     # Minimum distance between atoms should be 0.2 x covalent radius
+    #     mask = cov_deviations > 0.5
+    #     cov_deviations[mask] = 1.0
+
+    #     # Distance to covalent radius should be minimized
+    #     cov_deviations = (cov_deviations - 1.0).abs()
+    #     # Sum of batch and sequence
+    #     cov_deviations = cov_deviations.mean()
+
+    #     return cov_deviations
+
+    def computer_bondlength_deviation_loss(self, enc_latent: torch.Tensor):
+        bonded_indices = self.bond_indices
+        
+        if self.encoder is not None:
+            
+            # Get the coordinates from the latent space of the encoder
+            if self.encoder.device != enc_latent.device:
+                enc_latent = enc_latent.to(self.encoder.device)
+            if self.cov_mat.device != enc_latent.device:
+                self.cov_mat = self.cov_mat.to(enc_latent.device)
+            coordinates = self.encoder.decode_latent(
+                enc_latent.view(-1, enc_latent.shape[-1]), keeptensor=True)
+        else:
+            coordinates = enc_latent.view(enc_latent.shape[0], enc_latent.shape[1], -1, 3)
+
+        # Reshape the coordinates to get the flattened coordinates to be used in the pairwise distance
+        n_atoms = coordinates.shape[-2]
+        flattened_instances = coordinates.reshape(-1, n_atoms, 3)
+        n_instances = flattened_instances.shape[0]
+        flattened_coordinates = flattened_instances.reshape(-1, 3)
+
+        # print(f"Flattened Coordinates: {flattened_coordinates.shape}")
+        # print(f"Number of Instances: {n_instances}")
+        # print(f"Number of Atoms: {n_atoms}")
+        for bond in bonded_indices:
+            if bond[0] >= n_atoms or bond[1] >= n_atoms:
+                raise ValueError(
+                    f"Invalid bond indices: {bond} for {n_atoms} atoms")
+        
+
+        # Mask the non-bonded atoms
+        mask1 = torch.zeros(len(bonded_indices), device=enc_latent.device)
+        mask2 = torch.zeros(len(bonded_indices), device=enc_latent.device)
+        cov_distances = torch.zeros(
+            len(bonded_indices), device=enc_latent.device)
+
+        for ind, (i, j) in enumerate(bonded_indices):
+            mask1[ind] = i
+            mask2[ind] = j
+            cov_distances[ind] = self.cov_mat[i, j]
+        mask1 = mask1.repeat(n_instances)
+        mask2 = mask2.repeat(n_instances)
+        cov_distances = cov_distances.repeat(n_instances)
+        set1 = flattened_coordinates[mask1.long()]
+        set2 = flattened_coordinates[mask2.long()]
+
+        # print(f"Set1: {set1.shape}")
+        # print(f"Set2: {set2.shape}")
+
+        # Calculate the pairwise distance between the bonded atoms
+        dist = pairwise_distance(set1, set2)
+        # print(f"Distance: {dist[:len(bonded_indices)]}")
+
+
+        deviation = (dist - cov_distances).abs()
+        # print(f"Deviation: {deviation[:len(bonded_indices)]}")
+        # print(f"cov_distances: {cov_distances[:len(bonded_indices)]}")
+        # exit()
+        
+        print(f"Deviation: {deviation.mean()}")
+        return deviation.mean()
 
     def compute_loss(
         self,
@@ -113,30 +221,17 @@ class ModifiedQuantileRegression(QuantileRegression):
         if sample_weight is not None:
             losses = losses * sample_weight
 
-        if self.encoder is not None:
-            enc_latent = torch.max((self.quantiles_tensor - 1) * model_output,
+        losses = losses.mean()
+        
+        ## Bond deviation loss 
+        
+        weighted_output = torch.max((self.quantiles_tensor - 1) * model_output,
                                    self.quantiles_tensor * model_output).sum(dim=dim_q)
-            x = self.encoder.decode_latent(
-                enc_latent.view(-1, enc_latent.shape[-1]), keeptensor=True)
-            x = x[0]
-            print("X: ", x.shape)
-            print(f"elems: {self.elems}")
-            # calculate euclidean distance between the atoms in x
-            x = x.reshape(-1, 3)
-            x = x.unsqueeze(0)
-            x = x.repeat(x.shape[0], 1, 1)
-            x_t = x.transpose(0, 1)
-            diff = x.unsqueeze(0) - x_t.unsqueeze(1)
-            diff = diff.view(-1, 3)
-            diff = diff ** 2
-            diff = diff.sum(-1)
-            diff = diff.sqrt()
-            # diff = diff.view(x.shape[0], x.shape[0])
-            print("Diff: ", diff.shape)
-            exit()
-            diff = diff + torch.eye(diff.shape[0]).to(device)
-            # print("Diff: ", diff)
-        # print("Losses: ", losses.shape)
-        # exit()
+        loss_cov = self.computer_bondlength_deviation_loss(weighted_output)
+            # print(f"\n\nBond deviation Loss: {loss_cov.item()}\n")
+        if torch.isnan(loss_cov) or torch.isinf(loss_cov):
+            raise ValueError("Bond Loss is NaN or Inf")
+        losses = losses + loss_cov * 0.0
+            # print(f"\n Loss: {losses.item()}\n\n")
 
-        return losses.mean()
+        return losses

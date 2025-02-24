@@ -117,6 +117,8 @@ class XtcPredictor():
             structure = ase.Atoms(numbers=ch, positions=mol.positions)
             mol_traj.append(structure)
         print(f"Finished reading trajectory.") if verbose else None
+        self.u_original = u
+        self.data_window = (s, e)
 
         # Setting up the new universe to write
         self.u_res = mda.Universe.empty(len(ch),
@@ -140,9 +142,9 @@ class XtcPredictor():
         # Setting up an extra universe to do the validation
 
         self.new_coordinates = None
-        coordinates = [frame.positions for frame in mol_traj[:10]]
-        coordinates = np.array(coordinates)
-        self.warmup_legth = 0
+        # coordinates = [frame.positions for frame in mol_traj[:10]]
+        # coordinates = np.array(coordinates)
+        self.switch_idx = []
 
         self.xtcData_full = XtcData(
             structures=mol_traj,
@@ -155,10 +157,11 @@ class XtcPredictor():
         print("==========================================") if verbose else None
 
     def get_warmup_steps(self, size=5):
-        if size > len(self.xtcData_full):
+        curr_length = len(self.new_coordinates) if self.new_coordinates is not None else 0
+        if curr_length + size > len(self.xtcData_full):
             raise ValueError(
-                f"Size of sample is greater than the total number of frames loaded")
-        mddata = torch.utils.data.Subset(self.xtcData_full, list(range(size)))
+                f"Size fo the next warmup steps {size} plus previous steps {curr_length} exceeds the total number of frames {len(self.xtcData_full)}")
+        mddata = torch.utils.data.Subset(self.xtcData_full, list(range(curr_length, curr_length + size)))
         dl = DataLoader(
             mddata,
             batch_size=len(mddata),
@@ -170,8 +173,9 @@ class XtcPredictor():
         assert coordinates.shape[1] == self.u_res.atoms.n_atoms
         assert coordinates.shape[2] == 3
         self.extend_trajectory(coordinates)
-        self.warmup_legth = size
-        print(f"Loaded {size} frames for warmup") if self.verbose else None
+        self.switch_idx.append(curr_length)
+        self.switch_idx.append(curr_length + size)
+        print(f"Loaded {size} real frames for warmup") if self.verbose else None
         return res
 
     def get_full_batch(self):
@@ -200,6 +204,12 @@ class XtcPredictor():
         print(
             f"Writing {self.new_coordinates.shape[0]} frames to the trajectory") if self.verbose else None
         self.u_res.atoms.write(output_folder + "predicted.pdb", frames='all')
+        print(f"Predicted trajectory written to {output_folder + 'predicted.pdb'}") if self.verbose else None
+        self.print_validation_plots(output_folder)
+    
+    def output_real_trajectory(self, output_folder):
+        self.u_original.atoms.write(output_folder + "real.pdb", frames=self.u_original.trajectory[self.data_window[0]:self.data_window[1]])
+        print(f"Real trajectory written to {output_folder + 'real.pdb'}") if self.verbose else None
         self.print_validation_plots(output_folder)
 
     def print_validation_plots(self, output_folder):
@@ -236,10 +246,10 @@ class XtcPredictor():
             axes.set_yticklabels(
                 [r'$-\pi$', r'$-\pi/2$', r'$0$', r'$\pi/2$', r'$\pi$'])
 
-        wl = ax[0][1].vlines(self.warmup_legth, -np.pi, np.pi,
+        wl = ax[0][1].vlines(self.switch_idx, -np.pi, np.pi,
                              color='r', linestyle='--', label='Warmup length')
 
-        ax[0][1].legend([wl], ['Warmup length'], loc='upper right')
+        ax[0][1].legend([wl], ['Real trajectories'], loc='upper right')
 
         ax[1][0].plot(dih_all[:, 1], label=r'$\psi_{true}$', color='C1',
                       marker='x', linestyle='-', markersize=2, linewidth=0.0)
@@ -254,10 +264,10 @@ class XtcPredictor():
             axes.set_yticklabels(
                 [r'$-\pi$', r'$-\pi/2$', r'$0$', r'$\pi/2$', r'$\pi$'])
 
-        wl2 = ax[1][1].vlines(self.warmup_legth, -np.pi, np.pi,
+        wl2 = ax[1][1].vlines(self.switch_idx, -np.pi, np.pi,
                               color='r', linestyle='--', label='Warmup length')
 
-        ax[1][1].legend([wl2], ['Warmup length'])
+        ax[1][1].legend([wl2], ['Real trajectories'])
 
         fig.tight_layout()
         plt.savefig(output_folder + "dihedrals.png", dpi=300)

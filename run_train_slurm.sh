@@ -31,20 +31,20 @@ fi
 
 
 python engine.py    \
-                    --outfolder "sd_train_ala2_edvae" \
+                    --outfolder "sd_train_ala2_flatemb_100ps" \
                     --propagator TFT \
                     --xtcfile ../ala2_100ps/md.xtc \
                     --tprfile ../ala2_100ps/md.tpr \
                     --resnames "ALA" "ACE" "NME" \
-                    --tft_train_size 100 \
+                    --tft_train_size 200 \
                     --tft_validation_size 20 \
-                    --tft_seq_length 20 \
-                    --encoder "EDVAE" \
-                    --nepochs 1000 \
+                    --tft_seq_length 200 \
+                    --encoder "FLATEMB" \
+                    --nepochs 5000 \
                     --output_to_file \
                     --outpath . \
                     --save_checkpoint \
-                    --lr 0.01 \
+                    --lr 0.1 \
                     --scheduler \
-                    --enc_ckpt ./collective_encoder/run_ala2_100ps_2/EDVAE_checkpoint \
+                    # --enc_ckpt ./collective_encoder/run_ala2_100ps_5/EDVAE_checkpoint \
 
