@@ -19,3 +19,5 @@ lightning_logs/
 md17_data/
 darts_logs/
 saved_runs/
+train_runs/
+predict_runs/

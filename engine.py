@@ -1,23 +1,19 @@
-import wandb
-import warnings
-import time
 import sys
 import os
 import argparse
 
-import numpy as np
+import torch
 
-import pandas as pd
+import wandb
 
 from darts import TimeSeries
 from darts.utils.likelihood_models import QuantileRegression
 
-from utils import *
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-import torch
 
+from utils import *
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
 sys.path.append(os.path.dirname(os.getcwd() + '/propagators/'))
 
@@ -35,7 +31,7 @@ def parse_args():
     parser.add_argument('--propagator', type=str, default='TFT',
                         help='Type of propagator', choices=['TFT'])
     parser.add_argument('--encoder', type=str, default='EDVAE',
-                        help='Type of encoder', choices=['EDVAE', 'FLATEMB'])
+                        help='Type of encoder', choices=['EDVAE', 'EDVAEGAN', 'FLATEMB'])
     parser.add_argument('--dynamics', type=str, default='XTC',
                         help='Type of dynamics data', choices=['XTC'])
     parser.add_argument('--enc_ckpt', type=str, default=None,
@@ -73,6 +69,7 @@ def parse_args():
     # Run parameters
     parser.add_argument('--nogpu', action="store_true",
                         help='Do not use gpu acceleration')
+    
 
     parser.add_argument('--lrate', type=float, default=1e-4,
                         help='Learning rate for the training')
@@ -100,15 +97,17 @@ if args.propagator == "TFT":
 else:
     raise ValueError("Unknown propagator type")
 if args.encoder == "EDVAE":
-    from nets.edvae_net import EDVAE as enc_model
+    from collective_encoder.nets.edvae_net import EDVAE as enc_model
+elif args.encoder == "EDVAEGAN":
+    from collective_encoder.nets.edvae_gan_net import EDVAEGAN as enc_model
 elif args.encoder == "FLATEMB":
     from embeddings.flatemb import FlatEmb as enc_model
 else:
     raise ValueError("Unknown encoder type")
 
 if args.dynamics == 'XTC':
-    from dataloaders.xtc_dataloader import XtcDataset as main_dl
-    from dataloaders.xtc_dataloader import XTC_args as data_nested_args
+    from collective_encoder.dataloaders.xtc_dataloader import XtcDataset as main_dl
+    from collective_encoder.dataloaders.xtc_dataloader import XTC_args as data_nested_args
 else:
     raise ValueError("Unknown data type")
 
@@ -153,7 +152,7 @@ if args.output_to_file:
 ##################################
 # Loding trained encoder model
 ##################################
-if args.encoder == "EDVAE":
+if args.encoder in ["EDVAE", "EDVAEGAN"]:
     assert args.enc_ckpt is not None, "EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option"
     enc = enc_model.load_from_checkpoint(args.enc_ckpt)
 else:
@@ -176,13 +175,13 @@ series_list = []
 for i in range(n_series):
     traj = alldata[i*seq_len:(i+1)*seq_len]
     encoded = enc.get_latent_mean(traj)
+    assert len(encoded.shape) == 2, "Encoder output should be 2 dimensional"
     endoded = encoded.reshape(encoded.shape[0], -1)
     series = TimeSeries.from_values(encoded)
     series_list.append(series)
 
 train_series = series_list[:args.tft_train_size]
 val_series = series_list[args.tft_train_size:]
-
 
 ##################################
 # Initilizing Surrogate Propagator
@@ -193,12 +192,13 @@ prop_args = {}
 
 if args.propagator == "TFT":
     dyn_surrogate_args["input_chunk_length"] = 100
-    dyn_surrogate_args["output_chunk_length"] = 100
-    dyn_surrogate_args["hidden_size"] = 256
+    dyn_surrogate_args["output_chunk_length"] = 500
+    dyn_surrogate_args["hidden_size"] = 512
     dyn_surrogate_args["lstm_layers"] = 3
-    dyn_surrogate_args["num_attention_heads"] = 1
-    dyn_surrogate_args["dropout"] = 0.02
-    dyn_surrogate_args["batch_size"] = 16
+    dyn_surrogate_args["num_attention_heads"] = 3
+    dyn_surrogate_args["dropout"] = 0.05
+    # dyn_surrogate_args["full_attention"] = True
+    dyn_surrogate_args["batch_size"] = 32
 
     prop_args['n_epochs'] = args.nepochs
     # Marco: this needs to be true becaue i do not have covariant data
@@ -209,9 +209,9 @@ if args.propagator == "TFT":
         prop_args['lr_scheduler_cls'] = torch.optim.lr_scheduler.ReduceLROnPlateau
         prop_args['lr_scheduler_kwargs'] = {"mode": "min",                  
                                             "factor": 0.8,
-                                            "patience": 3,
+                                            "patience": 10,
                                             "min_lr": 1e-10,
-                                            "cooldown": 10,
+                                            "cooldown": 50,
                                             "verbose": True
                                             }
 
@@ -221,12 +221,16 @@ if args.propagator == "TFT":
     prop_args['save_checkpoints'] = True
     prop_args['work_dir'] = odir_name
 
-    # q = [0.25, 0.5, 0.75]
-    q = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4,
-         0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
+    likelihood_args = {}
+    likelihood_args['quantiles'] = [0.25, 0.5, 0.75]
+    likelihood_args['enc_ckpt'] = args.enc_ckpt
+    likelihood_args['elems'] = data_set.loatn
+    likelihood_args['bond_connections'] = data_set.bonds
+    
+    # q = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4,
+    #      0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
 
-    prop_args['likelihood'] = QuantileRegression(
-        quantiles=q, enc_ckpt=args.enc_ckpt, elems=data_set.loatn, bond_connections=data_set.bonds)
+    prop_args['likelihood'] = QuantileRegression(**likelihood_args)
 
     #########################################
     # Setup wandb logger
@@ -235,24 +239,29 @@ if args.propagator == "TFT":
     for key, value in vars(args).items():
         wandb_config[key] = value
     #########################################
-    if args.nolog:
-        logger = None
-    else:
-        logger = WandbLogger(project="DynSurrogate",
-                             name=odir_name, config=wandb_config)
     earty_stop = EarlyStopping(monitor='val_loss',
                                mode='min',
                                patience=500,
                                min_delta=0.001,
                                verbose=True,
                                )
+    if args.nolog:
+        logger = None
+    else:
+        logger = WandbLogger(project="DynSurrogate",
+                             name=odir_name.strip('.').strip('/').replace('/','_'), config=wandb_config)
 
     prop_args['pl_trainer_kwargs'] = {
         "accelerator": 'auto',
         "devices": 'auto',
         "logger": logger,
-        "callbacks": [earty_stop],
+        # "callbacks": [earty_stop],
     }
+    
+    if not args.nolog:
+        logger.experiment.config.update(dyn_surrogate_args)
+        logger.experiment.config.update(prop_args)
+        logger.experiment.config.update(likelihood_args)
 
 
 dyn_surrogate_args = prop_args | dyn_surrogate_args

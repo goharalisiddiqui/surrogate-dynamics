@@ -21,10 +21,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description=desc)
 
     # Run Settings
+    parser.add_argument('--mode', type=str, default='Read',
+                        help='Mode of run', choices=['Read', 'Realtime'])
     parser.add_argument('--propagator', type=str, default='TFT',
                         help='Type of propagator', choices=['TFT'])
     parser.add_argument('--encoder', type=str, default='EDVAE',
-                        help='Type of encoder', choices=['EDVAE', 'FLATEMB'])
+                        help='Type of encoder', choices=['EDVAE', 'EDVAEGAN', 'FLATEMB'])
     parser.add_argument('--dynamics', type=str, default='XTC',
                         help='Type of dynamics data', choices=['XTC'])
     parser.add_argument('--enc_ckpt', default=None,
@@ -69,6 +71,8 @@ def parse_args():
 
 args = parse_args()
 
+run_mode = args.mode
+
 ##################################
 # Importing Lightning Modules
 ##################################
@@ -81,6 +85,10 @@ if args.encoder == "EDVAE":
     if args.enc_ckpt is None:
         raise ValueError("EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option")
     from nets.edvae_net import EDVAE as enc_model
+elif args.encoder == "EDVAEGAN":
+    if args.enc_ckpt is None:
+        raise ValueError("EDVAEGAN encoding requires a path to the trained encoder checkpoint via --enc_ckpt option")
+    from nets.edvae_gan_net import EDVAEGAN as enc_model
 elif args.encoder == "FLATEMB":
     from embeddings.flatemb import FlatEmb as enc_model
 else:
@@ -116,6 +124,7 @@ if len(os.listdir(odir_name)) != 0:
     os.mkdir(odir_name)
 output_file_stem = odir_name+"/"+args.propagator+"_"
 
+
 ##################################
 # Output to file
 ##################################
@@ -130,31 +139,38 @@ if args.output_to_file:
     os.dup2(tee.stdin.fileno(), sys.stdout.fileno())
     os.dup2(tee.stdin.fileno(), sys.stderr.fileno())
 
+
 ##################################
 # Loding trained encoder model
 ##################################
-if args.encoder == "EDVAE":
+if args.encoder in ["EDVAE", "EDVAEGAN"]:
     assert args.enc_ckpt is not None, "EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option"
     enc = enc_model.load_from_checkpoint(args.enc_ckpt)
     print("Loaded encoder model latent dimensionality: ", enc.dim_latent)
+    print("Loaded encoder model from: ", args.enc_ckpt)
     # enc.metaD = True
 elif args.encoder == "FLATEMB":
     enc = enc_model()
 else:
     raise ValueError("Unknown encoder type")
 
+
 ##################################
 # Loding trained propagator model
 ##################################
+assert os.path.isdir(args.prop_model), "Propagator model path does not exist"
 prop_name = "_".join(args.prop_model.split('_')[:-1])
+prop_name = os.path.basename(prop_name)
 prop = dyn_surrogate.load_from_checkpoint(
     model_name=prop_name, work_dir=args.prop_model, best=True)
-##################################
-# Creating Dataset
-##################################
+print("Loaded propagator model from: ", args.prop_model)
 # Disable wandb logging since it fails on predict
 prop.trainer_params['logger'] = None
 
+
+##################################
+# Creating Dataset
+##################################
 n_predict_windows = args.n_windows
 nsteps_warmup = args.n_warmup
 nsteps_to_predict = args.n_predict
@@ -166,30 +182,44 @@ if nsteps_warmup == 0:
 
 data_nested_args = vars(PredictorData_args())
 data_nested_args['verbose'] = True
-data_nested_args['dataset_size'] = n_predict_windows * (nsteps_warmup + nsteps_to_predict)
+if run_mode == 'Read':
+    data_nested_args['dataset_size'] = n_predict_windows * (nsteps_warmup + nsteps_to_predict)
+else:
+    data_nested_args['dataset_size'] = nsteps_warmup
 pdata = PredictorData(**data_nested_args)
+
 
 ##################################
 # Prediction
 ##################################
+warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
 for i in range(n_predict_windows):
-    print(f"Predicting window {i+1}/{n_predict_windows}")
-    warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
-    encoded_warmup_steps = enc.get_latent_mean(warmup_steps)
 
+    print(f"Predicting window {i+1}/{n_predict_windows}")
+    encoded_warmup_steps = enc.get_latent_mean(warmup_steps)
     warmup_series = TimeSeries.from_values(encoded_warmup_steps)
-    # predicted_steps = prop.predict(
-    #     series=warmup_series, past_covariates=warmup_series, n=nsteps_to_predict, num_samples=100)
     predicted_steps = prop.predict(
-        series=warmup_series, n=nsteps_to_predict, num_samples=100)
+        series=warmup_series, n=nsteps_to_predict, num_samples=1)
     predicted_steps = predicted_steps.all_values()
     predicted_steps = torch.tensor(predicted_steps)
     predicted_steps = torch.mean(predicted_steps, 2)
 
     predicted_steps = enc.decode_latent(predicted_steps)
     pdata.extend_trajectory(predicted_steps)
+    
+    if i < n_predict_windows - 1:
+        if run_mode == 'Read':
+            warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
+        elif run_mode == 'Realtime':
+            warmup_steps = pdata.run_md(
+                inputs_folder = 'inputs/ala2',
+                run_folder=odir_name,
+                n_steps=nsteps_warmup
+            )
+        
+    
 # np.set_printoptions(threshold=sys.maxsize)
 # print(pdata.get_coordinates())
 
 pdata.output_trajectory(output_file_stem)
-pdata.output_real_trajectory(output_file_stem)
+# pdata.output_real_trajectory(output_file_stem)
