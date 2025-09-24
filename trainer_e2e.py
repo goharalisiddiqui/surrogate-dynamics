@@ -12,8 +12,9 @@ from darts.utils.likelihood_models import QuantileRegression
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.callbacks.lr_monitor import LearningRateMonitor
 
-from utils import *
+from utils_sd import *
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
 sys.path.append(os.path.dirname(os.getcwd() + '/propagators/'))
 
@@ -29,20 +30,10 @@ def parse_args():
 
     # Run Settings
     parser.add_argument('--propagator', type=str, default='TFT',
-                        help='Type of propagator', choices=['TFT'])
-    parser.add_argument('--encoder', type=str, default='EDVAE',
-                        help='Type of encoder', choices=['EDVAE', 'EDVAEGAN', 'FLATEMB'])
+                        help='Type of propagator', choices=['TFT', 'BGE_TFT'])
     parser.add_argument('--dynamics', type=str, default='XTC',
                         help='Type of dynamics data', choices=['XTC'])
-    parser.add_argument('--enc_ckpt', type=str, default=None,
-                        help='Saved PL module of encoder')
     parser.add_argument('--nepochs', type=int, help='Number of epochs to run')
-    parser.add_argument('--tft_train_size', required=True,
-                        type=int, help='Number of series to train on')
-    parser.add_argument('--tft_validation_size', required=True,
-                        type=int, help='Number of series in validation set')
-    parser.add_argument('--tft_seq_length', required=True,
-                        type=int, help='Number of frames if a series')
 
     # Output Settings
     parser.add_argument('--outpath', required=True, type=str,
@@ -69,6 +60,8 @@ def parse_args():
     # Run parameters
     parser.add_argument('--nogpu', action="store_true",
                         help='Do not use gpu acceleration')
+    parser.add_argument('--debug', action="store_true",
+                        help='Run in debug mode')
     
 
     parser.add_argument('--lrate', type=float, default=1e-4,
@@ -87,30 +80,32 @@ def parse_args():
 
 args = parse_args()
 
+if args.debug:
+    args.nepochs = 2
+    args.nexp = 0
+    args.outfolder = "debug"
+    args.overwrite = True
+    args.nolog = True
+    args.wand = False
+    print("Running in debug mode")
+
 ##################################
 # Importing Lightning Modules
 ##################################
 if args.propagator == "TFT":
     from propagators.tft_net import TFTModel as dyn_surrogate
     from propagators.tft_net import TFT_args as dyn_surrogate_args
-    from propagators.tft_net import ModifiedQuantileRegression as QuantileRegression
+elif args.propagator == "BGE_TFT":
+    from propagators.bge_tft import BondGraphEncoderTFT as dyn_surrogate
+    from propagators.bge_tft import BGETFT_args as dyn_surrogate_args
 else:
     raise ValueError("Unknown propagator type")
-if args.encoder == "EDVAE":
-    from collective_encoder.nets.edvae_net import EDVAE as enc_model
-elif args.encoder == "EDVAEGAN":
-    from collective_encoder.nets.edvae_gan_net import EDVAEGAN as enc_model
-elif args.encoder == "FLATEMB":
-    from embeddings.flatemb import FlatEmb as enc_model
-else:
-    raise ValueError("Unknown encoder type")
 
 if args.dynamics == 'XTC':
-    from collective_encoder.dataloaders.xtc_dataloader import XtcDataset as main_dl
-    from collective_encoder.dataloaders.xtc_dataloader import XTC_args as data_nested_args
+    from dataloaders.xtc_trainer import XtcTrainer as main_dl
+    from dataloaders.xtc_trainer import XTCT_args as data_nested_args
 else:
     raise ValueError("Unknown data type")
-
 
 ##################################
 # Output directory
@@ -150,38 +145,11 @@ if args.output_to_file:
     os.dup2(tee.stdin.fileno(), sys.stderr.fileno())
 
 ##################################
-# Loding trained encoder model
-##################################
-if args.encoder in ["EDVAE", "EDVAEGAN"]:
-    assert args.enc_ckpt is not None, "EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option"
-    enc = enc_model.load_from_checkpoint(args.enc_ckpt)
-else:
-    enc = enc_model()
-##################################
 # Creating Dataset
 ##################################
 
-n_series = args.tft_train_size + args.tft_validation_size
-seq_len = args.tft_seq_length
-
 data_nested_args = vars(data_nested_args())
-data_nested_args["sequential"] = True
-data_nested_args["verbose"] = True
-data_nested_args["dataset_size"] = n_series * seq_len
-# enc.metaD = True # Use this for old VAE models
 data_set = main_dl(**data_nested_args)
-alldata = data_set.get_full_batch()[0]
-series_list = []
-for i in range(n_series):
-    traj = alldata[i*seq_len:(i+1)*seq_len]
-    encoded = enc.get_latent_mean(traj)
-    assert len(encoded.shape) == 2, "Encoder output should be 2 dimensional"
-    endoded = encoded.reshape(encoded.shape[0], -1)
-    series = TimeSeries.from_values(encoded)
-    series_list.append(series)
-
-train_series = series_list[:args.tft_train_size]
-val_series = series_list[args.tft_train_size:]
 
 ##################################
 # Initilizing Surrogate Propagator
@@ -191,14 +159,14 @@ dyn_surrogate_args = {} | vars(dyn_surrogate_args())
 prop_args = {}
 
 if args.propagator == "TFT":
-    dyn_surrogate_args["input_chunk_length"] = 100
-    dyn_surrogate_args["output_chunk_length"] = 500
-    dyn_surrogate_args["hidden_size"] = 512
-    dyn_surrogate_args["lstm_layers"] = 3
-    dyn_surrogate_args["num_attention_heads"] = 3
-    dyn_surrogate_args["dropout"] = 0.05
+    dyn_surrogate_args["input_chunk_length"] = 5
+    dyn_surrogate_args["output_chunk_length"] = 5
+    dyn_surrogate_args["hidden_size"] = 64
+    dyn_surrogate_args["lstm_layers"] = 1
+    dyn_surrogate_args["num_attention_heads"] = 2
+    dyn_surrogate_args["dropout"] = 0.1
     # dyn_surrogate_args["full_attention"] = True
-    dyn_surrogate_args["batch_size"] = 32
+    dyn_surrogate_args["batch_size"] = 50
 
     prop_args['n_epochs'] = args.nepochs
     # Marco: this needs to be true becaue i do not have covariant data
@@ -208,12 +176,13 @@ if args.propagator == "TFT":
     if args.scheduler:        
         prop_args['lr_scheduler_cls'] = torch.optim.lr_scheduler.ReduceLROnPlateau
         prop_args['lr_scheduler_kwargs'] = {"mode": "min",                  
-                                            "factor": 0.8,
-                                            "patience": 10,
+                                            "factor": 0.5,
+                                            "patience": 20,
                                             "min_lr": 1e-10,
-                                            "cooldown": 50,
+                                            "cooldown": 100,
                                             "verbose": True
                                             }
+    lr_monitor = LearningRateMonitor(logging_interval='epoch')
 
     prop_args['model_name'] = args.outfolder
     prop_args['random_state'] = 42
@@ -222,10 +191,13 @@ if args.propagator == "TFT":
     prop_args['work_dir'] = odir_name
 
     likelihood_args = {}
+    # likelihood_args['quantiles'] = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3,
+    #                                 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 
+    #                                 0.9, 0.95, 0.99]
     likelihood_args['quantiles'] = [0.25, 0.5, 0.75]
-    likelihood_args['enc_ckpt'] = args.enc_ckpt
-    likelihood_args['elems'] = data_set.loatn
-    likelihood_args['bond_connections'] = data_set.bonds
+    # likelihood_args['enc_ckpt'] = args.enc_ckpt
+    # likelihood_args['elems'] = data_set.loatn
+    # likelihood_args['bond_connections'] = data_set.bonds
     
     # q = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4,
     #      0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
@@ -242,7 +214,7 @@ if args.propagator == "TFT":
     earty_stop = EarlyStopping(monitor='val_loss',
                                mode='min',
                                patience=500,
-                               min_delta=0.001,
+                               min_delta=0.0001,
                                verbose=True,
                                )
     if args.nolog:
@@ -255,7 +227,7 @@ if args.propagator == "TFT":
         "accelerator": 'auto',
         "devices": 'auto',
         "logger": logger,
-        # "callbacks": [earty_stop],
+        "callbacks": [lr_monitor],
     }
     
     if not args.nolog:
@@ -263,18 +235,29 @@ if args.propagator == "TFT":
         logger.experiment.config.update(prop_args)
         logger.experiment.config.update(likelihood_args)
 
+elif args.propagator == "BGE_TFT":
+    prop_args['prop_likelihood'] = args.nepochs
+    likelihood_args = {}
+    likelihood_args['quantiles'] = [0.25, 0.5, 0.75]
+    prop_args['likelihood'] = QuantileRegression(**likelihood_args)
+
+else:
+    raise ValueError("Unknown propagator type")
+
 
 dyn_surrogate_args = prop_args | dyn_surrogate_args
 prop_model = dyn_surrogate(**dyn_surrogate_args)
 
+exit()
 
 #########################################
 # Training the Surrogate Propagator
 # \
 # prop_model.fit(series=train_series, past_covariates=train_series,
 #                val_series=val_series, val_past_covariates=val_series, verbose=True)
-prop_model.fit(series=train_series, val_series=val_series, verbose=True)
-wandb.finish()
+prop_model.fit(series=data_set.get_train_series(), val_series=data_set.get_val_series(), verbose=True)
+if not args.nolog:
+    wandb.finish()
 #########################################
 # Saving the best model
 #########################################

@@ -4,8 +4,8 @@
 #SBATCH -n 1
 #SBATCH -c 8
 #SBATCH -p gpucloud
-#SBATCH --mem=10G
-#SBATCH --gres=shard:2
+#SBATCH --mem=8G
+#SBATCH --gres=shard:1
 #SBATCH --time=100:00:00
 #SBATCH --export=ALL
 #SBATCH -o ./slurm_logs/slurm-%J.out
@@ -26,25 +26,28 @@ else
     pref=''
 fi
 
-$pref python engine.py    \
+$pref python trainer.py    \
                     --dynamics XTC \
-                    --xtcfile ./data_generation/ala2/ala2_100ns/md.xtc \
-                    --tprfile ./data_generation/ala2/ala2_100ns/md.tpr \
+                    --xtcfile ./data_generation/ala2/300K/ala2_100ns/md.xtc \
+                    --tprfile ./data_generation/ala2/300K/ala2_100ns/md.tpr \
                     --selection "(resname ALA or resname ACE or resname NME) and not element H" \
-                    --dataset GRAPH \
+                    --dataset_type GRAPH \
                     --encoder_model BondGraphEncoder \
-                    --encoder_model_path ./run_BGE/run_4/GRAPH_ENCODER_checkpoint \
-                    --series_length 100 \
-                    --train_size 10 \
-                    --val_size 2 \
+                    --encoder_model_path ./run_BGE/run_5/GRAPH_ENCODER_checkpoint \
+                    --series_length 5000 \
+                    --stride 5 \
+                    --train_size 1 \
+                    --val_size 0 \
                     --propagator TFT \
-                    --nepochs 1 \
+                    --nepochs 2000 \
                     --scheduler \
-                    --lr 0.01 \
-                    --outpath . \
-                    --outfolder "test" \
-                    --nexp 1 \
-                    --overwrite \
+                    --lr 0.001 \
+                    --outpath ./train_runs/run_tft/ala2_100ns/bge_run4/100_400/ \
+                    --outfolder "run" \
+                    --nexp 8 \
+                    --output_to_file \
                     --save_checkpoint \
-                    --nolog \
 
+
+                    # --overwrite \
+                    # --nolog \

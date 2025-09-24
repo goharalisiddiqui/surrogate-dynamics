@@ -6,7 +6,7 @@ import torch
 
 from darts import TimeSeries
 
-from utils import *
+from utils_sd import *
 
 
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
@@ -21,8 +21,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description=desc)
 
     # Run Settings
-    parser.add_argument('--mode', type=str, default='Read',
-                        help='Mode of run', choices=['Read', 'Realtime'])
     parser.add_argument('--propagator', type=str, default='TFT',
                         help='Type of propagator', choices=['TFT'])
     parser.add_argument('--encoder', type=str, default='EDVAE',
@@ -47,12 +45,8 @@ def parse_args():
                         help='Also store output in a file')
 
     # Prediction settings
-    parser.add_argument('--n_warmup', type=int, default=0,
-                        help='Number of warmup steps to use for prediction')
-    parser.add_argument('--n_predict', type=int, default=0,
-                        help='Number of steps to predict')
-    parser.add_argument('--n_windows', type=int, default=0,
-                        help='Number of steps to predict')
+    parser.add_argument('--n_windows', type=int, default=1,
+                        help='How many prediction windows to run')
 
     # Save and/or Load Model
     # parser.add_argument('--save_checkpoint',
@@ -71,35 +65,21 @@ def parse_args():
 
 args = parse_args()
 
-run_mode = args.mode
-
 ##################################
 # Importing Lightning Modules
 ##################################
 if args.propagator == "TFT":
     from propagators.tft_net import TFTModel as dyn_surrogate
     from propagators.tft_net import TFT_args as dyn_surrogate_args
+    # from propagators.tft_net import ModifiedQuantileRegression as QuantileRegression
 else:
     raise ValueError("Unknown propagator type")
-if args.encoder == "EDVAE":
-    if args.enc_ckpt is None:
-        raise ValueError("EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option")
-    from nets.edvae_net import EDVAE as enc_model
-elif args.encoder == "EDVAEGAN":
-    if args.enc_ckpt is None:
-        raise ValueError("EDVAEGAN encoding requires a path to the trained encoder checkpoint via --enc_ckpt option")
-    from nets.edvae_gan_net import EDVAEGAN as enc_model
-elif args.encoder == "FLATEMB":
-    from embeddings.flatemb import FlatEmb as enc_model
-else:
-    raise ValueError("Unknown encoder type")
 
 if args.dynamics == 'XTC':
-    from data_predictors.xtc_predictor import XtcPredictor as PredictorData
-    from data_predictors.xtc_predictor import XTCP_args as PredictorData_args
+    from dataloaders.xtc_trainer import XtcTrainer as main_dl
+    from dataloaders.xtc_trainer import XTCT_args as data_nested_args
 else:
     raise ValueError("Unknown data type")
-
 
 ##################################
 # Output directory
@@ -141,21 +121,6 @@ if args.output_to_file:
 
 
 ##################################
-# Loding trained encoder model
-##################################
-if args.encoder in ["EDVAE", "EDVAEGAN"]:
-    assert args.enc_ckpt is not None, "EDVAE encoding requires a path to the trained encoder checkpoint via --enc_ckpt option"
-    enc = enc_model.load_from_checkpoint(args.enc_ckpt)
-    print("Loaded encoder model latent dimensionality: ", enc.dim_latent)
-    print("Loaded encoder model from: ", args.enc_ckpt)
-    # enc.metaD = True
-elif args.encoder == "FLATEMB":
-    enc = enc_model()
-else:
-    raise ValueError("Unknown encoder type")
-
-
-##################################
 # Loding trained propagator model
 ##################################
 assert os.path.isdir(args.prop_model), "Propagator model path does not exist"
@@ -172,54 +137,34 @@ prop.trainer_params['logger'] = None
 # Creating Dataset
 ##################################
 n_predict_windows = args.n_windows
-nsteps_warmup = args.n_warmup
-nsteps_to_predict = args.n_predict
-if nsteps_to_predict == 0:
-    nsteps_to_predict = 100 # FIXME: Get output chunk size from TFT model
-if nsteps_warmup == 0:
-    Warning("No warmup steps provided. Using 20% of prediction steps as warmup")
-    nsteps_warmup = 100 # FIXME: Get input chunk size from TFT model
+nsteps_warmup = prop.input_chunk_length
+nsteps_to_predict = prop.output_chunk_length
+print(f"Using {nsteps_warmup} warmup steps and {nsteps_to_predict} prediction steps")
 
-data_nested_args = vars(PredictorData_args())
+data_nested_args = vars(data_nested_args())
+data_nested_args['series_length'] = nsteps_warmup + nsteps_to_predict
+data_nested_args['train_size'] = 0
+data_nested_args['val_size'] = n_predict_windows
 data_nested_args['verbose'] = True
-if run_mode == 'Read':
-    data_nested_args['dataset_size'] = n_predict_windows * (nsteps_warmup + nsteps_to_predict)
-else:
-    data_nested_args['dataset_size'] = nsteps_warmup
-pdata = PredictorData(**data_nested_args)
+pdata = main_dl(**data_nested_args)
 
 
 ##################################
 # Prediction
 ##################################
 warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
+print(f"Using {warmup_steps.shape[0]} warmup steps for prediction")
 for i in range(n_predict_windows):
-
     print(f"Predicting window {i+1}/{n_predict_windows}")
-    encoded_warmup_steps = enc.get_latent_mean(warmup_steps)
-    warmup_series = TimeSeries.from_values(encoded_warmup_steps)
+    warmup_series = TimeSeries.from_values(warmup_steps)
     predicted_steps = prop.predict(
         series=warmup_series, n=nsteps_to_predict, num_samples=1)
     predicted_steps = predicted_steps.all_values()
     predicted_steps = torch.tensor(predicted_steps)
     predicted_steps = torch.mean(predicted_steps, 2)
 
-    predicted_steps = enc.decode_latent(predicted_steps)
-    pdata.extend_trajectory(predicted_steps)
+    pdata.add_predicted(predicted_steps)
     
     if i < n_predict_windows - 1:
-        if run_mode == 'Read':
-            warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
-        elif run_mode == 'Realtime':
-            warmup_steps = pdata.run_md(
-                inputs_folder = 'inputs/ala2',
-                run_folder=odir_name,
-                n_steps=nsteps_warmup
-            )
-        
-    
-# np.set_printoptions(threshold=sys.maxsize)
-# print(pdata.get_coordinates())
-
-pdata.output_trajectory(output_file_stem)
-# pdata.output_real_trajectory(output_file_stem)
+        warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
+pdata.output_results(output_file_stem)

@@ -12,6 +12,7 @@ run_multi.sh
 saved_runs/
 wandb/
 .venv/
+.venvv/
 .env
 lightning_logs/
 *.log
@@ -21,3 +22,5 @@ darts_logs/
 saved_runs/
 train_runs/
 predict_runs/
+slurm_logs/
+*.png
