@@ -2,7 +2,7 @@ debug: False
 outpath: ./tft_e2e
 outfolder: run
 overwrite: True
-nexp: 4
+nexp: 5
 output_to_file: True
 
 # Trainer Settings
@@ -14,7 +14,8 @@ wand_project: SurrogateDynamics
 wand_entity: goharalisiddiqui-tum
 scheduler: True
 lrate: 0.001
-loss_prop_weight: 1.0
+loss_prop_weight: 0.1
+loss_encdec_weights: [1.0, 1.0, 1.0, 1.0] # bond, angle, dihedral_cos, dihedral_sin
 
 dynamics_name: XTC
 data_args:

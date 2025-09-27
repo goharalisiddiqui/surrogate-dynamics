@@ -31,6 +31,8 @@ def parse_args():
     # Run Settings
     parser.add_argument('--config', required=True, type=str,
                         help='')
+    parser.add_argument('--debug', action='store_true',
+                        help='Run in debug mode with small data and epochs')
     
     args = parser.parse_args()
 
@@ -41,6 +43,8 @@ args = parse_args()
 
 assert os.path.isfile(args.config), "Config file not found!"
 config = yaml.safe_load(open(args.config, 'r'))
+if args.debug:
+    config['debug'] = True
 
 if config['debug']:
     config['nepochs'] = 3

@@ -21,6 +21,8 @@ def parse_args():
     # Run Settings
     parser.add_argument('--config', required=True, type=str,
                         help='Config file for prediction')
+    parser.add_argument('--debug', action='store_true',
+                        help='Run in debug mode with small data and epochs')
     
     args = parser.parse_args()
 
@@ -31,11 +33,13 @@ args = parse_args()
 
 assert os.path.isfile(args.config), "Config file not found!"
 config = yaml.safe_load(open(args.config, 'r'))
+if args.debug:
+    config['debug'] = True
 
 if config['debug']:
     config['nexp'] = 0
-    config['outpath'] = "."
-    config['outfolder'] = "pred_debug"
+    config['outpath'] = "predict_runs"
+    config['outfolder'] = "debug"
     config['overwrite'] = True
     config['nolog'] = True
     config['output_to_file'] = True
@@ -116,9 +120,19 @@ datamod = DataModule(**datamod_args)
 # Loding trained propagator model
 ##################################
 assert os.path.isfile(config['propagator_ckpt']), "Propagator model path does not exist"
+print(f"\n\n[Loading propagator model {PropagatorModel.__name__}]")
+print("========================================")
 prop = PropagatorModel.load_from_checkpoint(config['propagator_ckpt'], datamodule=datamod)
 print("Loaded propagator model from: ", config['propagator_ckpt'])
-
+print("Model details:")
+for name, param in prop.hparams.items():
+    if isinstance(param, dict):
+        print(f"{name}:")
+        for k, v in param.items():
+            print(f"    {k}: {v}")
+    else:
+        print(f"{name}: {param}")
+print("=========================================\n\n")
 
 ##################################
 # Prediction

@@ -754,6 +754,7 @@ class BondGraphEncoderTFT(pl.LightningModule):
 
         data = self.normalize(batch)
         latent = self.gnn_enc(data)
+        latent_dec = self.gnn_dec(latent)
         predict_steps = latent.size(0)
         if predict_steps < self.sequence_length:
             raise ValueError(f"Not enough input steps for prediction: have {predict_steps}, "
@@ -773,8 +774,9 @@ class BondGraphEncoderTFT(pl.LightningModule):
             prop_out = torch.cat([prop_out, prop_extra], dim=1)
             pbar.update(prop_extra.size(1))
         pbar.close()
-        prop_out = prop_out[:, :predict_steps, :].contiguous()
-        gnn_out = self.gnn_dec(prop_out.view(-1, self.latent_dim))
+        prop_out = prop_out[:, :predict_steps, :].contiguous().squeeze(0)  # (T, C)
+
+        gnn_out = self.gnn_dec(prop_out)
 
         pred = { # FIXME: hardcoded for now
             'bond_dist_true': batch.y_bonds.view(predict_steps, -1),
@@ -785,6 +787,10 @@ class BondGraphEncoderTFT(pl.LightningModule):
             'angle_pred': gnn_out['angle'],
             'dihedral_cos_pred': gnn_out['dihedral_cos'],
             'dihedral_sin_pred': gnn_out['dihedral_sin'],
+            'bond_dist_decoded': latent_dec['bond_dist'],
+            'angle_decoded': latent_dec['angle'],
+            'dihedral_cos_decoded': latent_dec['dihedral_cos'],
+            'dihedral_sin_decoded': latent_dec['dihedral_sin'],
         }
         return pred
 

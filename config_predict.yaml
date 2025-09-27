@@ -1,4 +1,4 @@
-debug: False
+debug: True
 outpath: ./predict_runs/tft_e2e
 outfolder: run
 overwrite: True
@@ -20,7 +20,7 @@ data_args:
     predict_steps : 100
 
 propagator_name: BGE_TFT
-propagator_ckpt: ./tft_e2e/run_4/checkpoints/best.ckpt
+propagator_ckpt: ./train_runs/tft_e2e/run_4/checkpoints/best.ckpt
 
 writer_name: ala2
 
