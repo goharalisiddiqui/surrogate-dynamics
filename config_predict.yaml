@@ -1,0 +1,47 @@
+debug: False
+outpath: ./predict_runs/tft_e2e
+outfolder: run
+overwrite: True
+nexp: 1
+output_to_file: True
+nogpu: False
+
+# Prediction Settings
+
+#####################################################################
+# E2E Model of Ala2
+#####################################################################
+dynamics_name: XTC_graph
+data_args:
+    xtcfile: ./data_generation/ala2/300K/ala2_100ns/md.xtc
+    tprfile: ./data_generation/ala2/300K/ala2_100ns/md.tpr
+    selection: "(resname ALA or resname ACE or resname NME) and not element H"
+    dataset_type : "GRAPH"
+    predict_steps : 100
+
+propagator_name: BGE_TFT
+propagator_ckpt: ./tft_e2e/run_4/checkpoints/best.ckpt
+
+writer_name: ala2
+
+#####################################################################
+
+
+#####################################################################
+# Separate Latent and Propagation Models
+#####################################################################
+# dynamics_name: XTC
+# data_args:
+#     xtcfile: ./data_generation/ala2/300K/ala2_100ns/md.xtc
+#     tprfile: ./data_generation/ala2/300K/ala2_100ns/md.tpr
+#     selection: "(resname ALA or resname ACE or resname NME) and not element H"
+#     dataset_type : "GRAPH"
+#     predict_size : 100
+#     batch_size : 32
+
+# propagator_name: BGE_TFT
+# propagator_ckpt: ./tft_e2e/run/checkpoints/best.ckpt
+
+# propagator_name: BGE_TFT
+# propagator_ckpt: ./tft_e2e/run/checkpoints/best.ckpt
+#####################################################################

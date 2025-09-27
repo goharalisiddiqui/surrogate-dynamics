@@ -26,28 +26,4 @@ else
     pref=''
 fi
 
-$pref python trainer.py    \
-                    --dynamics XTC \
-                    --xtcfile ./data_generation/ala2/300K/ala2_100ns/md.xtc \
-                    --tprfile ./data_generation/ala2/300K/ala2_100ns/md.tpr \
-                    --selection "(resname ALA or resname ACE or resname NME) and not element H" \
-                    --dataset_type GRAPH \
-                    --encoder_model BondGraphEncoder \
-                    --encoder_model_path ./run_BGE/run_5/GRAPH_ENCODER_checkpoint \
-                    --series_length 5000 \
-                    --stride 5 \
-                    --train_size 1 \
-                    --val_size 0 \
-                    --propagator TFT \
-                    --nepochs 2000 \
-                    --scheduler \
-                    --lr 0.001 \
-                    --outpath ./train_runs/run_tft/ala2_100ns/bge_run4/100_400/ \
-                    --outfolder "run" \
-                    --nexp 8 \
-                    --output_to_file \
-                    --save_checkpoint \
-
-
-                    # --overwrite \
-                    # --nolog \
+$pref python trainer_e2e.py --config config_train.yaml

@@ -1,5 +1,6 @@
 import torch
 from torch import nn as nn
+from torch import Tensor
 import torch.nn.functional as F
 
 class MonteCarloDropout(nn.Dropout):

@@ -7,6 +7,7 @@ Copied from Darts git repository
 from collections.abc import Sequence
 from typing import Optional, Union
 from venv import logger
+from functools import wraps
 
 import numpy as np
 import pandas as pd
@@ -14,7 +15,7 @@ import torch
 from torch import nn
 from torch.nn import LSTM as _LSTM
 
-from darts.logging import get_logger, raise_if, raise_if_not, raise_log
+# from darts.logging import get_logger, raise_if, raise_if_not, raise_log
 from propagators.tft_parts.components import glu_variants, layer_norm_variants
 from propagators.tft_parts.components.glu_variants import GLU_FFN
 
@@ -26,12 +27,54 @@ from propagators.tft_parts.modules import (
     _VariableSelectionNetwork,
     get_embedding_size,
 )
-# from darts.utils.likelihood_models.torch import QuantileRegression
+from darts.utils.likelihood_models.torch import QuantileRegression
 
+def io_processor(forward):
+    """Applies some input / output processing to PLForecastingModule.forward.
+    Note that this wrapper must be added to each of PLForecastinModule's subclasses forward methods.
+    Here is an example how to add the decorator:
+
+    ```python
+        @io_processor
+        def forward(self, *args, **kwargs)
+            pass
+    ```
+
+    Applies
+    -------
+    Reversible Instance Normalization
+        normalizes batch input target features, and inverse transform the forward output back to the original scale
+    """
+
+    @wraps(forward)
+    def forward_wrapper(self, x_in, *args, **kwargs):
+        if not self.use_reversible_instance_norm:
+            return forward(self, x_in, *args, **kwargs)
+
+        # `x_in` is input batch tuple which by definition has the past features in the first element
+        # starting with the first n target features; clone it to prevent target re-normalization
+        past_features = x_in[0].clone()
+        # apply reversible instance normalization
+        past_features[:, :, : self.n_targets] = self.rin(
+            past_features[:, :, : self.n_targets]
+        )
+        # run the forward pass
+        out = forward(self, *((past_features, *x_in[1:]), *args), **kwargs)
+        # inverse transform target output back to original scale
+        if isinstance(out, tuple):
+            # RNNModel return tuple with hidden state
+            return self.rin.inverse(out[0]), *out[1:]
+        else:
+            # all other models return only the prediction
+            return self.rin.inverse(out)
+
+    return forward_wrapper
 
 class ModifiedTFTModel(nn.Module):
     def __init__(
         self,
+        input_chunk_length: int,
+        output_chunk_length: int,
         output_dim: tuple[int, int],
         variables_meta: dict[str, dict[str, list[str]]],
         num_static_components: int,
@@ -49,48 +92,6 @@ class ModifiedTFTModel(nn.Module):
         """Modified implementing of TFT architecture from `this paper <https://arxiv.org/pdf/1912.09363.pdf>`_
         The implementation is built upon Darts library's TemporalFusionTransformer
 
-        Parameters
-        ----------
-        output_dim : Tuple[int, int]
-            shape of output given by (n_targets, loss_size). (loss_size corresponds to nr_params in other models).
-        variables_meta : Dict[str, Dict[str, List[str]]]
-            dict containing variable encoder, decoder variable names for mapping tensors in `_TFTModule.forward()`
-        num_static_components
-            the number of static components (not variables) of the input target series. This is either equal to the
-            number of target components or 1.
-        hidden_size : int
-            hidden state size of the TFT. It is the main hyper-parameter and common across the internal TFT
-            architecture.
-        lstm_layers : int
-            number of layers for the Long Short Term Memory (LSTM) Encoder and Decoder (1 is a good default).
-        num_attention_heads : int
-            number of attention heads (4 is a good default)
-        full_attention : bool
-            If `True`, applies multi-head attention query on past (encoder) and future (decoder) parts. Otherwise,
-            only queries on future part. Defaults to `False`.
-        feed_forward
-            Set the feedforward network block. default `GatedResidualNetwork` or one of the  glu variant.
-            Defaults to `GatedResidualNetwork`.
-        hidden_continuous_size : int
-            default for hidden size for processing continuous variables.
-        categorical_embedding_sizes : dict
-            A dictionary containing embedding sizes for categorical static covariates. The keys are the column names
-            of the categorical static covariates. The values are tuples of integers with
-            `(number of unique categories, embedding size)`. For example `{"some_column": (64, 8)}`.
-            Note that `TorchForecastingModels` can only handle numeric data. Consider transforming/encoding your data
-            with `darts.dataprocessing.transformers.static_covariates_transformer.StaticCovariatesTransformer`.
-        dropout : float
-            Fraction of neurons affected by Dropout.
-        add_relative_index : bool
-            Whether to add positional values to future covariates. Defaults to `False`.
-            This allows to use the TFTModel without having to pass future_covariates to `fit()` and `train()`.
-            It gives a value to the position of each step from input and output chunk relative to the prediction
-            point. The values are normalized with `input_chunk_length`.
-        likelihood
-            The likelihood model to be used for probabilistic forecasts. By default, the TFT uses
-            a ``QuantileRegression`` likelihood.
-        norm_type: str | nn.Module
-            The type of LayerNorm variant to use.
         """
 
         super().__init__()
@@ -108,13 +109,21 @@ class ModifiedTFTModel(nn.Module):
         self.dropout = dropout
         self.add_relative_index = add_relative_index
 
+        self.input_chunk_length = input_chunk_length
+        self.output_chunk_length = output_chunk_length
+        self.sequence_length = input_chunk_length + output_chunk_length
+
+        self.use_reversible_instance_norm = False
+        if self.use_reversible_instance_norm:
+            self.rin = layer_norm_variants.RINorm(input_dim=self.n_targets)
+        else:
+            self.rin = None
+
         if isinstance(norm_type, str):
             try:
                 self.layer_norm = getattr(layer_norm_variants, norm_type)
             except AttributeError:
-                raise_log(
-                    AttributeError("please provide a valid layer norm type"),
-                )
+                raise AttributeError("please provide a valid layer norm type")
         else:
             self.layer_norm = norm_type
 
@@ -291,10 +300,10 @@ class ModifiedTFTModel(nn.Module):
                 layer_norm=self.layer_norm,
             )
         else:
-            raise_if_not(
-                self.feed_forward in GLU_FFN,
-                f"'{self.feed_forward}' is not in {GLU_FFN + ['GatedResidualNetwork']}",
-            )
+            if self.feed_forward not in glu_variants.__all__:
+                raise AttributeError(
+                    f"'{self.feed_forward}' is not among implemented GLU variants: {glu_variants.__all__}"
+                )
             # use glu variant feedforward layers
             # 4 is a commonly used feedforward multiplier
             self.feed_forward_block = getattr(glu_variants, self.feed_forward)(
@@ -601,6 +610,7 @@ class ModifiedTFTModel(nn.Module):
         )
         return mask
 
+    @io_processor
     def forward(self, x_in: tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]) -> torch.Tensor:
         """TFT model forward pass.
 

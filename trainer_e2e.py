@@ -1,18 +1,20 @@
 import sys
 import os
+import shutil
 import argparse
+import yaml
 
 import torch
 
 import wandb
 
-from darts import TimeSeries
 from darts.utils.likelihood_models import QuantileRegression
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.lr_monitor import LearningRateMonitor
+from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 
 from utils_sd import *
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
@@ -22,98 +24,67 @@ sys.path.append(os.path.dirname(os.getcwd() + '/propagators/'))
 ##################################
 # Arguments
 ##################################
-
-
 def parse_args():
     desc = "Surrogate model to predict dynamics of molecular systems as time series data"
     parser = argparse.ArgumentParser(description=desc)
 
     # Run Settings
-    parser.add_argument('--propagator', type=str, default='TFT',
-                        help='Type of propagator', choices=['TFT', 'BGE_TFT'])
-    parser.add_argument('--dynamics', type=str, default='XTC',
-                        help='Type of dynamics data', choices=['XTC'])
-    parser.add_argument('--nepochs', type=int, help='Number of epochs to run')
-
-    # Output Settings
-    parser.add_argument('--outpath', required=True, type=str,
-                        help='Output folder for saving the training output')
-    parser.add_argument('--outfolder', type=str, default='sd_training',
-                        help='Stem of the folder name to save the output')
-    parser.add_argument('--nexp', required=False, default=1,
-                        type=int, help='Experiment number for output names')
-    parser.add_argument('--wand', action="store_true",
-                        help='Log to WandB logger')
-    parser.add_argument('--tblogger', action="store_true",
-                        help='Log to Tensorboard logger')
-    parser.add_argument('--overwrite', action="store_true",
-                        help='Overwrite output folder')
-    parser.add_argument('--output_to_file', action="store_true",
-                        help='Also store output in a file')
-
-    # Save and/or Load Model
-    parser.add_argument('--save_checkpoint',
-                        action="store_true", help='Save Checkpoint')
-    parser.add_argument('--load_model', default=None,
-                        type=str, help='Load model from checkpoint')
-
-    # Run parameters
-    parser.add_argument('--nogpu', action="store_true",
-                        help='Do not use gpu acceleration')
-    parser.add_argument('--debug', action="store_true",
-                        help='Run in debug mode')
+    parser.add_argument('--config', required=True, type=str,
+                        help='')
     
-
-    parser.add_argument('--lrate', type=float, default=1e-4,
-                        help='Learning rate for the training')
-    parser.add_argument('--scheduler', action="store_true",
-                        help='Use learning rate scheduler')
-    parser.add_argument('--nolog', action="store_true",
-                        help='Dont log to wandb')
-    # parser.add_argument('--l2norm', type=float, default=1e-3, help='Weights regularization for the training')
-    # parser.add_argument('--nobatchnorm', action="store_false", help='Disable batch normalization in the network')
-
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
 
     return args
 
 
 args = parse_args()
 
-if args.debug:
-    args.nepochs = 2
-    args.nexp = 0
-    args.outfolder = "debug"
-    args.overwrite = True
-    args.nolog = True
-    args.wand = False
+assert os.path.isfile(args.config), "Config file not found!"
+config = yaml.safe_load(open(args.config, 'r'))
+
+if config['debug']:
+    config['nepochs'] = 3
+    config['nexp'] = 0
+    config['outpath'] = "."
+    config['outfolder'] = "debug"
+    config['overwrite'] = True
+    config['nolog'] = True
+    config['wand'] = False
+    config['output_to_file'] = True
+
+    config['propagator_args']['input_chunk_length'] = 2
+    config['propagator_args']['output_chunk_length'] = 2
+
+    config['data_args']['num_workers'] = 1
+    config['data_args']['train_size'] = 10
+    config['data_args']['validation_size'] = 6
+    config['data_args']['batch_size'] = 2
+    config['data_args']['val_batch_size'] = 2
     print("Running in debug mode")
 
 ##################################
 # Importing Lightning Modules
 ##################################
-if args.propagator == "TFT":
+if config['propagator_name'] == "TFT":
     from propagators.tft_net import TFTModel as dyn_surrogate
     from propagators.tft_net import TFT_args as dyn_surrogate_args
-elif args.propagator == "BGE_TFT":
+elif config['propagator_name'] == "BGE_TFT":
     from propagators.bge_tft import BondGraphEncoderTFT as dyn_surrogate
-    from propagators.bge_tft import BGETFT_args as dyn_surrogate_args
 else:
-    raise ValueError("Unknown propagator type")
+    raise ValueError("Unknown propagator type: " + config['propagator_name'])
 
-if args.dynamics == 'XTC':
-    from dataloaders.xtc_trainer import XtcTrainer as main_dl
-    from dataloaders.xtc_trainer import XTCT_args as data_nested_args
+if config['dynamics_name'] == 'XTC':
+    from dataloaders.xtc_graph import XtcSequence as main_dl
 else:
-    raise ValueError("Unknown data type")
+    raise ValueError("Unknown data type: " + config['dynamics_name'])
 
 ##################################
 # Output directory
 ##################################
-odir = args.outpath + "/" + args.outfolder + "_"
-nexp = args.nexp
+odir = config['outpath'] + "/" + config['outfolder'] + "_"
+nexp = config['nexp']
 odir_name = odir+str(nexp)
-if not args.overwrite:
+if not config['overwrite']:
     while True:
         odir_name = odir+str(nexp)
         if not os.path.isdir(odir_name):
@@ -128,12 +99,12 @@ if len(os.listdir(odir_name)) != 0:
     import shutil
     shutil.rmtree(odir_name, ignore_errors=True)
     os.mkdir(odir_name)
-output_file_stem = odir_name+"/"+args.propagator+"_"
+output_file_stem = odir_name+"/"+config['propagator_name']+"_"
 
 ##################################
 # Output to file
 ##################################
-if args.output_to_file:
+if config['output_to_file']:
     import sys
     import subprocess
     print("Redirecting output to file "+odir_name+"/out.txt")
@@ -147,33 +118,56 @@ if args.output_to_file:
 ##################################
 # Creating Dataset
 ##################################
-
-data_nested_args = vars(data_nested_args())
-data_set = main_dl(**data_nested_args)
+config['data_args']['sequence_length'] = (
+    config['propagator_args']['input_chunk_length'] +
+    config['propagator_args']['output_chunk_length']
+)
+data_set = main_dl(**config['data_args'])
 
 ##################################
 # Initilizing Surrogate Propagator
 ##################################
 
-dyn_surrogate_args = {} | vars(dyn_surrogate_args())
+# Setup PL callbacks
+lr_monitor = LearningRateMonitor(logging_interval='epoch')
+early_stop = EarlyStopping(monitor='val_loss',
+                           mode='min',
+                           patience=100,
+                           min_delta=1e-8,
+                           verbose=True,
+                           )
+checkpoint_callback = ModelCheckpoint(
+    monitor='val_loss',
+    dirpath=odir_name + '/checkpoints',
+    filename=config['propagator_name'] + '-{epoch:02d}-{val_loss:.6f}',
+    save_top_k=1,
+    mode='min',
+)
+cbs = [lr_monitor, checkpoint_callback, early_stop]
+
+# Setup wandb logger
+if config['nolog']:
+    logger = None
+else:
+    logger = WandbLogger(
+                        project=config['wand_project'],
+                        entity=config['wand_entity'],
+                        name=odir_name.strip('.').strip('/').replace('/','_'), 
+                        config=config,
+                        save_dir=odir_name
+                        )
+
 prop_args = {}
+trainer_args = {}
+if config['propagator_name'] == "TFT":
+    prop_args = config['propagator_args']
+    prop_args["batch_size"] = config['batch_size']
 
-if args.propagator == "TFT":
-    dyn_surrogate_args["input_chunk_length"] = 5
-    dyn_surrogate_args["output_chunk_length"] = 5
-    dyn_surrogate_args["hidden_size"] = 64
-    dyn_surrogate_args["lstm_layers"] = 1
-    dyn_surrogate_args["num_attention_heads"] = 2
-    dyn_surrogate_args["dropout"] = 0.1
-    # dyn_surrogate_args["full_attention"] = True
-    dyn_surrogate_args["batch_size"] = 50
-
-    prop_args['n_epochs'] = args.nepochs
-    # Marco: this needs to be true becaue i do not have covariant data
+    prop_args['n_epochs'] = config['nepochs']
     prop_args['add_relative_index'] = True
     prop_args['add_encoders'] = None
-    prop_args['optimizer_kwargs'] = {"lr": args.lrate}
-    if args.scheduler:        
+    prop_args['optimizer_kwargs'] = {"lr": config['lrate']}
+    if config['scheduler']:        
         prop_args['lr_scheduler_cls'] = torch.optim.lr_scheduler.ReduceLROnPlateau
         prop_args['lr_scheduler_kwargs'] = {"mode": "min",                  
                                             "factor": 0.5,
@@ -182,9 +176,9 @@ if args.propagator == "TFT":
                                             "cooldown": 100,
                                             "verbose": True
                                             }
-    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    
 
-    prop_args['model_name'] = args.outfolder
+    prop_args['model_name'] = config['outfolder']
     prop_args['random_state'] = 42
     prop_args['force_reset'] = True
     prop_args['save_checkpoints'] = True
@@ -195,72 +189,65 @@ if args.propagator == "TFT":
     #                                 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 
     #                                 0.9, 0.95, 0.99]
     likelihood_args['quantiles'] = [0.25, 0.5, 0.75]
-    # likelihood_args['enc_ckpt'] = args.enc_ckpt
-    # likelihood_args['elems'] = data_set.loatn
-    # likelihood_args['bond_connections'] = data_set.bonds
     
-    # q = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4,
-    #      0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
-
     prop_args['likelihood'] = QuantileRegression(**likelihood_args)
-
-    #########################################
-    # Setup wandb logger
-    #########################################
-    wandb_config = {}
-    for key, value in vars(args).items():
-        wandb_config[key] = value
-    #########################################
-    earty_stop = EarlyStopping(monitor='val_loss',
-                               mode='min',
-                               patience=500,
-                               min_delta=0.0001,
-                               verbose=True,
-                               )
-    if args.nolog:
-        logger = None
-    else:
-        logger = WandbLogger(project="DynSurrogate",
-                             name=odir_name.strip('.').strip('/').replace('/','_'), config=wandb_config)
-
     prop_args['pl_trainer_kwargs'] = {
         "accelerator": 'auto',
         "devices": 'auto',
         "logger": logger,
-        "callbacks": [lr_monitor],
+        "callbacks": cbs,
     }
     
-    if not args.nolog:
-        logger.experiment.config.update(dyn_surrogate_args)
-        logger.experiment.config.update(prop_args)
-        logger.experiment.config.update(likelihood_args)
 
-elif args.propagator == "BGE_TFT":
-    prop_args['prop_likelihood'] = args.nepochs
-    likelihood_args = {}
-    likelihood_args['quantiles'] = [0.25, 0.5, 0.75]
-    prop_args['likelihood'] = QuantileRegression(**likelihood_args)
+elif config['propagator_name'] == "BGE_TFT":
+    prop_args['datamodule'] = data_set
+    prop_args['encoder_args'] = config['encoder_args']
+    prop_args['decoder_args'] = config['decoder_args']
+    prop_args['propagator_args'] = config['propagator_args']
+
+    prop_args['quantiles'] = [0.25, 0.5, 0.75]
+
+    prop_args['lr'] = config['lrate']
+    prop_args['loss_prop_weight'] = config['loss_prop_weight']
+    prop_args['weight_decay'] = config['weight_decay']
+    prop_args['normIn'] = True
+    prop_args['scheduler'] = config['scheduler']
+    prop_args['outname'] = output_file_stem
+
+    trainer_args['accelerator'] = 'auto'
+    trainer_args['devices'] = 'auto'
+    trainer_args['logger'] = logger
+    trainer_args['callbacks'] = cbs
+
 
 else:
     raise ValueError("Unknown propagator type")
 
 
-dyn_surrogate_args = prop_args | dyn_surrogate_args
-prop_model = dyn_surrogate(**dyn_surrogate_args)
 
-exit()
+if not config['nolog']:
+    logger.experiment.config.update(prop_args)
+
+
+model = dyn_surrogate(**prop_args)
+
 
 #########################################
 # Training the Surrogate Propagator
-# \
-# prop_model.fit(series=train_series, past_covariates=train_series,
-#                val_series=val_series, val_past_covariates=val_series, verbose=True)
-prop_model.fit(series=data_set.get_train_series(), val_series=data_set.get_val_series(), verbose=True)
-if not args.nolog:
+#########################################
+trainer_args['max_epochs'] = config['nepochs']
+trainer_args['log_every_n_steps'] = 1
+trainer_args['default_root_dir'] = odir_name
+trainer_args['num_sanity_val_steps'] = 0
+trainer = pl.Trainer(**trainer_args)
+
+trainer.fit(model, datamodule=data_set)
+
+if not config['nolog']:
     wandb.finish()
+
 #########################################
 # Saving the best model
 #########################################
-best_model = prop_model.load_from_checkpoint(
-    model_name=prop_args['model_name'], work_dir=odir_name, best=True)
-best_model.save(output_file_stem + "best.ckpt")
+shutil.copyfile(checkpoint_callback.best_model_path, odir_name + "/checkpoints/best.ckpt")
+print("Best model saved at " + odir_name + "/checkpoints/best.ckpt")

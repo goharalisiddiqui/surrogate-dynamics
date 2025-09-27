@@ -100,8 +100,8 @@ else:
     raise ValueError("Unknown propagator type")
 
 if args.dynamics == 'XTC':
-    from dataloaders.xtc_trainer import XtcTrainer as main_dl
-    from dataloaders.xtc_trainer import XTCT_args as data_nested_args
+    from dataloaders.xtc_latent import XtcTrainer as main_dl
+    from dataloaders.xtc_latent import XTCT_args as data_nested_args
 else:
     raise ValueError("Unknown data type")
 
