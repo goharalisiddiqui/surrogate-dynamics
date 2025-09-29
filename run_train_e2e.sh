@@ -26,4 +26,16 @@ else
     pref=''
 fi
 
-$pref python trainer_e2e.py --config config_train.yaml
+#Read command line arguments
+while getopts d flag
+do
+    case "${flag}" in
+        d) debug=1;;
+    esac
+done
+
+if [ "$debug" == 1 ]; then
+    $pref python trainer_e2e.py --config config_train.yaml --debug
+else
+    $pref python trainer_e2e.py --config config_train.yaml
+fi

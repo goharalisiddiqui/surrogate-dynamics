@@ -465,6 +465,8 @@ class BondGraphEncoderTFT(pl.LightningModule):
         scheduler: Optional[bool] = False,
         loss_encdec_weights: Optional[List[float]] = None,
         loss_prop_weight: Optional[float] = 1.0,
+        loss_rec_weight: Optional[float] = 1.0,
+        loss_e2e_weight: Optional[float] = 1.0,
         out_labels: Optional[List[str]] = ['bond_dist', 'angle', 'dihedral_cos', 'dihedral_sin'],
         outname: Optional[str] = './BGE_untitled/BGE_',
     ):
@@ -665,8 +667,10 @@ class BondGraphEncoderTFT(pl.LightningModule):
         # TFT expects (B, T, C) inputs; returns (B, T_out, C)
         prop_out = self.propagator((prop_in, None, None))
 
+        prop_sample = self.likelihood.sample(prop_out)
+        prop_dec = self.gnn_dec(prop_sample.view(-1, self.latent_dim))
         # pred = self.denormalize(pred)
-        return pred, latent, prop_out
+        return pred, latent, prop_out, prop_dec
 
     def extract_labels(self, batch):
         """extract target labels from a batch.
@@ -683,8 +687,7 @@ class BondGraphEncoderTFT(pl.LightningModule):
 
         return labels
 
-    def loss_encdec(self, pred, labels, stage: str):
-        batch_size = self.trainer.datamodule.hparams.batch_size if self.trainer and self.trainer.datamodule else None
+    def loss_encdec(self, pred, labels, stage: str, batch_size=None):
         losses = {}
         for out_label, weight in zip(self.hparams['out_labels'], self.loss_encdec_weights):
             losses[out_label] = self.loss_fn(pred[out_label], labels[out_label]) * weight
@@ -705,9 +708,7 @@ class BondGraphEncoderTFT(pl.LightningModule):
 
         return sum(losses.values())
 
-    def loss_prop(self, prop_out, latent, stage: str):
-        batch_size = self.trainer.datamodule.hparams.batch_size if self.trainer and self.trainer.datamodule else None
-
+    def loss_prop(self, prop_out, latent, stage: str, batch_size=None):
         prop_latent = latent.view(-1, self.sequence_length, self.latent_dim)
         prop_target = prop_latent[:, -self.propagator.output_chunk_length:, :]
 
@@ -717,24 +718,50 @@ class BondGraphEncoderTFT(pl.LightningModule):
 
         return loss_prop
 
+    def loss_e2e(self, prop_dec, labels, stage: str, batch_size=None):
+        losses = {}
+        for out_label, weight in zip(self.hparams['out_labels'], self.loss_encdec_weights):
+            label = labels[out_label]
+            label = label.view(-1, self.sequence_length, label.shape[-1])
+            label = label[:, -self.propagator.output_chunk_length:, :]
+            label = label.contiguous().view(-1, label.shape[-1])
+            losses[out_label] = self.loss_fn(prop_dec[out_label], label) * weight
+            self.log(f"{stage}_e2e_{out_label}_loss", losses[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
+        
+        self.log(f"{stage}_e2e_loss", sum(losses.values()), 
+                 prog_bar=(stage=="train"), on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)
+
+        with torch.no_grad():
+            mae = {}
+            for out_label in self.hparams['out_labels']:
+                label = labels[out_label]
+                label = label.view(-1, self.sequence_length, label.shape[-1])
+                label = label[:, -self.propagator.output_chunk_length:, :]
+                label = label.contiguous().view(-1, label.shape[-1])
+                mae[out_label] = (torch.abs(prop_dec[out_label] - label).mean() 
+                                if label.numel() > 0 
+                                else torch.tensor(0.0, device=prop_dec[out_label].device))
+                self.log(f"{stage}_e2e_{out_label}_mae", mae[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
+            self.log(f"{stage}_e2e_mae", sum(mae.values()) / len(mae), 
+                     prog_bar=(stage!="train"), on_epoch=True, batch_size=batch_size)
+
+        return sum(losses.values())
+    
     def step(self, batch, stage: str):
-        pred, latent, prop_out = self.forward(batch)
+        pred, latent, prop_out, prop_dec = self.forward(batch)
         labels = self.extract_labels(batch)
 
         batch_size = self.trainer.datamodule.hparams.batch_size if self.trainer and self.trainer.datamodule else None
 
-        # print("PREDICTIONS:")
-        # for k, v in pred.items():
-        #     print(f"{k}: Shape {v.shape}")
-        # print("LABELS:")
-        # for k, v in labels.items():
-        #     print(f"{k}: Shape {v.shape}")
-        # exit()
-        loss_encdec = self.loss_encdec(pred, labels, stage)
+        loss_encdec = self.loss_encdec(pred, labels, stage, batch_size=batch_size)
 
-        loss_prop = self.loss_prop(prop_out, latent, stage)
+        loss_prop = self.loss_prop(prop_out, latent, stage, batch_size=self.sequence_length)
 
-        loss = loss_encdec + self.hparams.loss_prop_weight * loss_prop
+        loss_e2e = self.loss_e2e(prop_dec, labels, stage, batch_size=batch_size)
+
+        loss = (self.hparams.loss_rec_weight * loss_encdec 
+                + self.hparams.loss_prop_weight * loss_prop
+                + self.hparams.loss_e2e_weight * loss_e2e)
         
         self.log(f"{stage}_loss", loss, prog_bar=(stage=="train"), 
                  on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)

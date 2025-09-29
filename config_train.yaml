@@ -1,7 +1,7 @@
 debug: False
-outpath: ./tft_e2e
+outpath: ./train_runs/tft_e2e
 outfolder: run
-overwrite: True
+overwrite: False
 nexp: 5
 output_to_file: True
 
@@ -14,7 +14,9 @@ wand_project: SurrogateDynamics
 wand_entity: goharalisiddiqui-tum
 scheduler: True
 lrate: 0.001
-loss_prop_weight: 0.1
+loss_prop_weight: 0.01
+loss_rec_weight: 1.0
+loss_e2e_weight: 1.0
 loss_encdec_weights: [1.0, 1.0, 1.0, 1.0] # bond, angle, dihedral_cos, dihedral_sin
 
 dynamics_name: XTC
@@ -60,8 +62,8 @@ decoder_args:
 propagator_name: BGE_TFT
 propagator_args:
     input_chunk_length: 5
-    output_chunk_length: 5
+    output_chunk_length: 1
     hidden_dim: 128
     lstm_layers: 1
     num_attention_heads: 2
-    dropout: 0.1
+    dropout: 0.0

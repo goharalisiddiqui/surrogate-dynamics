@@ -49,7 +49,7 @@ if args.debug:
 if config['debug']:
     config['nepochs'] = 3
     config['nexp'] = 0
-    config['outpath'] = "."
+    config['outpath'] = "train_runs"
     config['outfolder'] = "debug"
     config['overwrite'] = True
     config['nolog'] = True
