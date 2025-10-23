@@ -35,7 +35,7 @@ do
 done
 
 if [ "$debug" == 1 ]; then
-    $pref python trainer_e2e.py --config config_train.yaml --debug
+    $pref python trainer.py --config config_train.yaml --debug
 else
-    $pref python trainer_e2e.py --config config_train.yaml
+    $pref python trainer.py --config config_train.yaml
 fi

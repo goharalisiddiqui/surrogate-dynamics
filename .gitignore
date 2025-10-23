@@ -1,14 +1,6 @@
 __pycache__/
 *checkpoint*
 core
-run*/
-*train*/
-sd_training*/
-sd_prediction*/
-run_predict.sh
-run_train.sh
-run_slurm.sh
-run_multi.sh
 wandb/
 .venv/
 .venvv/

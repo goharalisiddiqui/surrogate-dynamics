@@ -26,10 +26,10 @@ data_args:
     xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
     tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
     selection: "(resname ALA or resname ACE or resname NME) and not element H"
-    train_size : 8000
+    train_size : 2000
     batch_size : 128
-    validation_size : 2000
-    val_batch_size : 128
+    validation_size : 256
+    val_batch_size : 64
     dataset_type : "GRAPH"
     num_workers : 4
     norm_type : "minmax"

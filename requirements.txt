@@ -1,0 +1,27 @@
+numpy
+scipy
+pandas
+scikit-learn
+matplotlib
+--extra-index-url https://download.pytorch.org/whl/cu122
+torch==2.5.1
+torch-geometric
+lightning
+wandb
+imageio
+ase
+MDAnalysis
+MDTraj
+darts
+pyemma
+
+# These usually require torch in the parent python but if we don't have it, we need to activate the venv in the build
+# pip's dependency resolution is failing due to these
+--find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
+torch-cluster --global-option="--no-build-isolation"
+torch-scatter --global-option="--no-build-isolation"
+torch-sparse --global-option="--no-build-isolation"
+torch-spline-conv --global-option="--no-build-isolation"
+
+# Run the following command after the requirements.txt is installed
+# pip install torch-cluster torch-sparse torch-scatter torch-spline-conv -f https://data.pyg.org/whl/torch-2.5.1+cu121.html --no-cache-dir --no-build-isolation
