@@ -107,19 +107,24 @@ if config['output_to_file']:
     os.dup2(tee.stdin.fileno(), sys.stdout.fileno())
     os.dup2(tee.stdin.fileno(), sys.stderr.fileno())
 
-
-
+# Check beforehand if the checkpoint file exists
+assert os.path.isfile(config['propagator_ckpt']), "Propagator model path does not exist"
 
 ##################################
 # Creating Dataset
 ##################################
-datamod_args = config['data_args']
+datamod_args = config['data_args'].copy()
+if config['pred_only']:
+    # Peek in the model to get the required input length
+    hpr = torch.load(config['propagator_ckpt'], map_location='cpu')['hyper_parameters']
+    input_chunk_length = hpr['propagator_args']['input_chunk_length']
+    datamod_args['predict_steps'] = input_chunk_length
 datamod = DataModule(**datamod_args)
+
 
 ##################################
 # Loding trained propagator model
 ##################################
-assert os.path.isfile(config['propagator_ckpt']), "Propagator model path does not exist"
 print(f"\n\n[Loading propagator model {PropagatorModel.__name__}]")
 print("========================================")
 prop = PropagatorModel.load_from_checkpoint(config['propagator_ckpt'], datamodule=datamod)
@@ -134,36 +139,19 @@ for name, param in prop.hparams.items():
         print(f"{name}: {param}")
 print("=========================================\n\n")
 
+
+
 ##################################
 # Prediction
 ##################################
-pred_writer = PredictionWriter(output_dir=odir_name, write_interval="epoch")
+pred_writer = PredictionWriter(output_dir=odir_name, write_interval="epoch", config=config.get('writer_args', {}))
 predictor_args = {}
 predictor_args['default_root_dir'] = odir_name
 predictor_args['accelerator'] = "cpu"
 predictor_args['devices'] = 1
 predictor_args['callbacks'] = [pred_writer]
 
+prop.set_predict_steps(config['data_args']['predict_steps'])
 trainer = pl.Trainer(**predictor_args)
 
 trainer.predict(prop, datamodule=datamod, return_predictions=False)
-
-
-
-
-# warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
-# print(f"Using {warmup_steps.shape[0]} warmup steps for prediction")
-# for i in range(n_predict_windows):
-#     print(f"Predicting window {i+1}/{n_predict_windows}")
-#     warmup_series = TimeSeries.from_values(warmup_steps)
-#     predicted_steps = prop.predict(
-#         series=warmup_series, n=nsteps_to_predict, num_samples=1)
-#     predicted_steps = predicted_steps.all_values()
-#     predicted_steps = torch.tensor(predicted_steps)
-#     predicted_steps = torch.mean(predicted_steps, 2)
-
-#     pdata.add_predicted(predicted_steps)
-    
-#     if i < n_predict_windows - 1:
-#         warmup_steps = pdata.get_warmup_steps(nsteps_warmup)
-# pdata.output_results(output_file_stem)

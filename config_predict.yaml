@@ -1,28 +1,35 @@
 debug: False
 outpath: ./predict_runs/tft_e2e
-outfolder: run
+outfolder: run_v23
 overwrite: True
 nexp: 1
 output_to_file: True
 nogpu: False
-
-# Prediction Settings
+pred_only: True
 
 #####################################################################
 # E2E Model of Ala2
 #####################################################################
 dynamics_name: XTC_graph
 data_args:
-    xtcfile: ./data_generation/ala2/300K/ala2_100ns/md.xtc
-    tprfile: ./data_generation/ala2/300K/ala2_100ns/md.tpr
+    xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
+    tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
     selection: "(resname ALA or resname ACE or resname NME) and not element H"
     dataset_type : "GRAPH"
-    predict_steps : 10000
+    predict_steps : 50000
+    # predict_batch_size : 800
 
 propagator_name: BGE_TFT
-propagator_ckpt: ./train_runs/tft_e2e/run_6/checkpoints/best.ckpt
+propagator_ckpt: ./train_runs/tft_e2e/run_23/checkpoints/best.ckpt
 
 writer_name: ala2
+writer_args:
+    kde_sigma: 0.2
+    kde_bin_x: 200
+    kde_bin_y: 200
+    minima_tolerance: 0.5
+    n_minima_compare: 3
+    n_BFGS_runs: 100
 
 #####################################################################
 

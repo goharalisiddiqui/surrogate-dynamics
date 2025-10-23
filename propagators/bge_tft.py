@@ -691,7 +691,7 @@ class BondGraphEncoderTFT(pl.LightningModule):
         losses = {}
         for out_label, weight in zip(self.hparams['out_labels'], self.loss_encdec_weights):
             losses[out_label] = self.loss_fn(pred[out_label], labels[out_label]) * weight
-            self.log(f"{stage}_{out_label}_loss", losses[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
+            self.log(f"{stage}_recon_{out_label}_loss", losses[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
         
         self.log(f"{stage}_recon_loss", sum(losses.values()), 
                  prog_bar=(stage=="train"), on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)
@@ -702,8 +702,8 @@ class BondGraphEncoderTFT(pl.LightningModule):
                 mae[out_label] = (torch.abs(pred[out_label] - labels[out_label]).mean() 
                                 if labels[out_label].numel() > 0 
                                 else torch.tensor(0.0, device=pred[out_label].device))
-                self.log(f"{stage}_{out_label}_mae", mae[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
-            self.log(f"{stage}_mae", sum(mae.values()) / len(mae), 
+                self.log(f"{stage}_recon_{out_label}_mae", mae[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
+            self.log(f"{stage}_recon_mae", sum(mae.values()) / len(mae), 
                      prog_bar=(stage!="train"), on_epoch=True, batch_size=batch_size)
 
         return sum(losses.values())
@@ -753,11 +753,23 @@ class BondGraphEncoderTFT(pl.LightningModule):
 
         batch_size = self.trainer.datamodule.hparams.batch_size if self.trainer and self.trainer.datamodule else None
 
-        loss_encdec = self.loss_encdec(pred, labels, stage, batch_size=batch_size)
+        # Reconstruction loss of encoder-decoder
+        if self.hparams.loss_rec_weight > 0.0:
+            loss_encdec = self.loss_encdec(pred, labels, stage, batch_size=batch_size)
+        else:
+            loss_encdec = torch.tensor(0.0, device=latent.device)
+        
+        # Propagation loss in latent space
+        if self.hparams.loss_prop_weight > 0.0:
+            loss_prop = self.loss_prop(prop_out, latent, stage, batch_size=self.sequence_length)
+        else:
+            loss_prop = torch.tensor(0.0, device=latent.device)
 
-        loss_prop = self.loss_prop(prop_out, latent, stage, batch_size=self.sequence_length)
-
-        loss_e2e = self.loss_e2e(prop_dec, labels, stage, batch_size=batch_size)
+        # End-to-end loss of propagated decoded structures
+        if self.hparams.loss_e2e_weight > 0.0:
+            loss_e2e = self.loss_e2e(prop_dec, labels, stage, batch_size=batch_size)
+        else:
+            loss_e2e = torch.tensor(0.0, device=latent.device)
 
         loss = (self.hparams.loss_rec_weight * loss_encdec 
                 + self.hparams.loss_prop_weight * loss_prop
@@ -777,17 +789,7 @@ class BondGraphEncoderTFT(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         self.step(batch, "test")
 
-    def predict_step(self, batch, batch_idx):
-
-        data = self.normalize(batch)
-        latent = self.gnn_enc(data)
-        latent_dec = self.gnn_dec(latent)
-        predict_steps = latent.size(0)
-        if predict_steps < self.sequence_length:
-            raise ValueError(f"Not enough input steps for prediction: have {predict_steps}, "
-                             f"need at least {self.sequence_length}")
-
-        warmup = latent[:self.propagator.input_chunk_length, :].view(1, self.propagator.input_chunk_length, self.latent_dim)
+    def propagate(self, warmup, predict_steps):
         # TFT expects (B, T, C) inputs; returns (B, T_out, C)
         prop_out = self.propagator((warmup, None, None))
         prop_out = self.likelihood.sample(prop_out)
@@ -795,30 +797,73 @@ class BondGraphEncoderTFT(pl.LightningModule):
 
         pbar = tqdm(total=predict_steps, leave=False, desc="Autoregressive Propagation", ncols=80)
         while prop_out.size(1) < predict_steps:
-            warmup = prop_out[:, -self.propagator.input_chunk_length:, :]
-            prop_extra = self.propagator((warmup, None, None))
+            inp = prop_out[:, -self.propagator.input_chunk_length:, :]
+            prop_extra = self.propagator((inp, None, None))
             prop_extra = self.likelihood.sample(prop_extra)
             prop_out = torch.cat([prop_out, prop_extra], dim=1)
             pbar.update(prop_extra.size(1))
         pbar.close()
         prop_out = prop_out[:, :predict_steps, :].contiguous().squeeze(0)  # (T, C)
+        
+        return prop_out
+    
+    def set_predict_steps(self, steps: int):
+        assert steps >= self.sequence_length, f"predict_steps must be at least {self.sequence_length}"
+        self.predict_steps = steps
 
-        gnn_out = self.gnn_dec(prop_out)
+    def predict_step(self, batch, batch_idx):
+        data = self.normalize(batch)
+        latent = self.gnn_enc(data)
 
-        pred = { # FIXME: hardcoded for now
-            'bond_dist_true': batch.y_bonds.view(predict_steps, -1),
-            'angle_true': batch.y_angles.view(predict_steps, -1),
-            'dihedral_cos_true': batch.y_torsions_cos.view(predict_steps, -1),
-            'dihedral_sin_true': batch.y_torsions_sin.view(predict_steps, -1),
-            'bond_dist_pred': gnn_out['bond_dist'],
-            'angle_pred': gnn_out['angle'],
-            'dihedral_cos_pred': gnn_out['dihedral_cos'],
-            'dihedral_sin_pred': gnn_out['dihedral_sin'],
-            'bond_dist_decoded': latent_dec['bond_dist'],
-            'angle_decoded': latent_dec['angle'],
-            'dihedral_cos_decoded': latent_dec['dihedral_cos'],
-            'dihedral_sin_decoded': latent_dec['dihedral_sin'],
-        }
+        if hasattr(self, 'predict_steps'):
+            predict_steps = self.predict_steps
+        else:
+            predict_steps = latent.size(0)
+
+        if predict_steps < self.hparams.propagator_args['input_chunk_length']:
+            raise ValueError(f"Not enough input steps for prediction: have {predict_steps}, "
+                             f"need at least {self.hparams.propagator_args['input_chunk_length']}")
+        warmup = latent[:self.hparams.propagator_args['input_chunk_length'], :].view(1, self.hparams.propagator_args['input_chunk_length'], self.latent_dim)
+
+        prop_out = self.propagate(warmup, predict_steps=predict_steps)
+
+        if predict_steps > 1000:
+            # To save memory, only decode 1000 graphs at a time
+            gnn_out = {}
+            for i in range(0, predict_steps, 1000):
+                chunk = prop_out[i:i+1000, :].contiguous()
+                chunk_out = self.gnn_dec(chunk)
+                for k, v in chunk_out.items():
+                    if k not in gnn_out:
+                        gnn_out[k] = []
+                    gnn_out[k].append(v)
+            for k in gnn_out:
+                gnn_out[k] = torch.cat(gnn_out[k], dim=0)
+        else:
+            gnn_out = self.gnn_dec(prop_out)
+
+        pred = { "Predicted":{
+            'bond_dist': gnn_out['bond_dist'],
+            'angle': gnn_out['angle'],
+            'dihedral_cos': gnn_out['dihedral_cos'],
+            'dihedral_sin': gnn_out['dihedral_sin'],
+        },}
+
+        if latent.size(0) == pred['Predicted']['bond_dist'].size(0): # Only when we get more than warmup steps
+            pred['True'] = {
+                'bond_dist': batch.y_bonds.view(predict_steps, -1),
+                'angle': batch.y_angles.view(predict_steps, -1),
+                'dihedral_cos': batch.y_torsions_cos.view(predict_steps, -1),
+                'dihedral_sin': batch.y_torsions_sin.view(predict_steps, -1),
+            }
+            latent_dec = self.gnn_dec(latent)
+            pred['Decoded'] = {
+                'bond_dist': latent_dec['bond_dist'],
+                'angle': latent_dec['angle'],
+                'dihedral_cos': latent_dec['dihedral_cos'],
+                'dihedral_sin': latent_dec['dihedral_sin'],
+            }
+
         return pred
 
     def configure_optimizers(self):
