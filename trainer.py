@@ -3,6 +3,7 @@ import os
 import shutil
 import argparse
 import yaml
+import warnings
 
 import torch
 
@@ -52,8 +53,7 @@ if config['debug']:
     config['outpath'] = "train_runs"
     config['outfolder'] = "debug"
     config['overwrite'] = True
-    config['nolog'] = True
-    config['wand'] = False
+    config['wandb'] = False
     config['output_to_file'] = True
 
     config['propagator_args']['input_chunk_length'] = 2
@@ -70,20 +70,25 @@ if config['debug']:
 # Importing Lightning Modules
 ##################################
 if config['propagator_name'] == "TFT":
-    from propagators.tft_net import TFTModel as dyn_surrogate
-    from propagators.tft_net import TFT_args as dyn_surrogate_args
+    from propagators.tft import PropagatorTFT as dyn_surrogate
 elif config['propagator_name'] == "BGE_TFT":
     from propagators.bge_tft import BondGraphEncoderTFT as dyn_surrogate
 else:
     raise ValueError("Unknown propagator type: " + config['propagator_name'])
 
+if config['propagator_name'] == "TFT":
+    encdec_name = config.get('encdec_name', None)
+    if encdec_name == None:
+        raise ValueError("Encoder name must be specified for TFT propagator")
+    if encdec_name == "BGE":
+        from collective_encoder.nets.bge import BondGraphNetEncoderDecoder as EncDecModel
+    else:
+        raise ValueError("Unknown encoder type: " + encdec_name)
+
 if config['dynamics_name'] == 'XTC_graph':
     from dataloaders.xtc_graph import XtcSequence as main_dl
 else:
     raise ValueError("Unknown data type: " + config['dynamics_name'])
-
-if config.get('data_analyser', None) == 'ala2':
-    from plotters.ala2 import Ala2DataAnalyser as DataAnalyser
 
 
 ##################################
@@ -131,8 +136,14 @@ config['data_args']['sequence_length'] = (
     config['propagator_args']['output_chunk_length']
 )
 data_set = main_dl(**config['data_args'])
+
 if config.get('data_analyser', None):
-    analyser = DataAnalyser(output_dir=odir_name+"/data_analysis")
+    if config['data_analyser'] == 'ala2':
+        from collective_encoder.plotters.ala2 import Ala2DataAnalyser as DataAnalyser
+    else:
+        warnings.warn("Unknown data analyser type: "+config['data_analyser'])
+
+    analyser = DataAnalyser(output_dir=odir_name+"/data_analysis", data_args=config['data_args'])
     analyser.write_data(data_set.get_dataset())
 
 ##################################
@@ -157,93 +168,59 @@ checkpoint_callback = ModelCheckpoint(
 cbs = [lr_monitor, checkpoint_callback, early_stop]
 
 # Setup wandb logger
-if config['nolog']:
-    logger = None
-else:
+if config.get('wandb', False):
     logger = WandbLogger(
-                        project=config['wand_project'],
-                        entity=config['wand_entity'],
+                        project=config['wandb_project'],
+                        entity=config['wandb_entity'],
                         name=odir_name.strip('.').strip('/').replace('/','_'), 
                         config=config,
                         save_dir=odir_name
                         )
+else:
+    logger = None
 
 prop_args = {}
 trainer_args = {}
+
 if config['propagator_name'] == "TFT":
-    prop_args = config['propagator_args']
-    prop_args["batch_size"] = config['batch_size']
-
-    prop_args['n_epochs'] = config['nepochs']
-    prop_args['add_relative_index'] = True
-    prop_args['add_encoders'] = None
-    prop_args['optimizer_kwargs'] = {"lr": config['lrate']}
-    if config['scheduler']:        
-        prop_args['lr_scheduler_cls'] = torch.optim.lr_scheduler.ReduceLROnPlateau
-        prop_args['lr_scheduler_kwargs'] = {"mode": "min",                  
-                                            "factor": 0.5,
-                                            "patience": 20,
-                                            "min_lr": 1e-10,
-                                            "cooldown": 100,
-                                            "verbose": True
-                                            }
-    
-
-    prop_args['model_name'] = config['outfolder']
-    prop_args['random_state'] = 42
-    prop_args['force_reset'] = True
-    prop_args['save_checkpoints'] = True
-    prop_args['work_dir'] = odir_name
-
-    likelihood_args = {}
-    # likelihood_args['quantiles'] = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3,
-    #                                 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 
-    #                                 0.9, 0.95, 0.99]
-    likelihood_args['quantiles'] = [0.25, 0.5, 0.75]
-    
-    prop_args['likelihood'] = QuantileRegression(**likelihood_args)
-    prop_args['pl_trainer_kwargs'] = {
-        "accelerator": 'auto',
-        "devices": 'auto',
-        "logger": logger,
-        "callbacks": cbs,
-    }
-    
+    encdec_ckpt = config.get('encdec_ckpt', None)
+    if encdec_ckpt is None:
+        raise ValueError("Encoder-decoder checkpoint path must be specified for TFT propagator")
+    encdec = EncDecModel.load_from_checkpoint(encdec_ckpt, datamodule=data_set)
+    prop_args['encdec_model'] = encdec
 
 elif config['propagator_name'] == "BGE_TFT":
     prop_args['datamodule'] = data_set
     prop_args['encoder_args'] = config['encoder_args']
     prop_args['decoder_args'] = config['decoder_args']
-    prop_args['propagator_args'] = config['propagator_args']
-
-    prop_args['quantiles'] = config['quantiles']
-
-    prop_args['lr'] = config['lrate']
     prop_args['loss_prop_weight'] = config['loss_prop_weight']
     prop_args['loss_rec_weight'] = config['loss_rec_weight']
     prop_args['loss_e2e_weight'] = config['loss_e2e_weight']
-    prop_args['weight_decay'] = config['weight_decay']
-    prop_args['normIn'] = True
-    prop_args['scheduler'] = config['scheduler']
-    prop_args['outname'] = output_file_stem
-
-    trainer_args['accelerator'] = 'auto'
-    trainer_args['devices'] = 'auto'
-    trainer_args['logger'] = logger
-    trainer_args['callbacks'] = cbs
-
-
 else:
     raise ValueError("Unknown propagator type")
 
+prop_args['propagator_args'] = config['propagator_args']
 
+prop_args['likelihood'] = config.get('likelihood', 'QuantileRegression')
+prop_args['likelihood_args'] = config.get('likelihood_args', None)
 
-if not config['nolog']:
+prop_args['lr'] = config.get('lrate', 1e-3)
+prop_args['weight_decay'] = config.get('weight_decay', 0.0) 
+prop_args['normIn'] = config.get('normIn', False)
+prop_args['scheduler'] = config.get('scheduler', None)
+prop_args['scheduler_args'] = config.get('scheduler_args', None)
+prop_args['outname'] = output_file_stem
+
+trainer_args['accelerator'] = 'auto'
+trainer_args['devices'] = 'auto'
+trainer_args['logger'] = logger
+trainer_args['callbacks'] = cbs
+
+if config.get('wandb', False):
     logger.experiment.config.update(prop_args)
 
 
 model = dyn_surrogate(**prop_args)
-
 
 #########################################
 # Training the Surrogate Propagator
@@ -256,7 +233,7 @@ trainer = pl.Trainer(**trainer_args)
 
 trainer.fit(model, datamodule=data_set)
 
-if not config['nolog']:
+if config.get('wandb', False):
     wandb.finish()
 
 #########################################

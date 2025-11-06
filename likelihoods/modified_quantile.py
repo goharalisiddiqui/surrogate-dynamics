@@ -1,5 +1,4 @@
 import os
-from darts.models import TFTModel
 from darts.logging import raise_if_not
 from darts.utils.likelihood_models import QuantileRegression
 from torch.nn.functional import pairwise_distance

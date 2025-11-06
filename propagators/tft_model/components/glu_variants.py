@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from propagators.tft_parts.components.feed_forward import FeedForward
+from propagators.tft_model.components.feed_forward import FeedForward
 
 GLU_FFN = ["GLU", "Bilinear", "ReGLU", "GEGLU", "SwiGLU", "ReLU", "GELU"]
 

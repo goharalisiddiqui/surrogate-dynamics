@@ -107,7 +107,7 @@ class XtcTrainer(XtcDataset):
 
         # Import Model class
         if encoder_model == 'BondGraphEncoder':
-            from collective_encoder.nets.gnn_encoder import BondGraphNetEncoderDecoder as EncoderClass
+            from collective_encoder.nets.bge import BondGraphNetEncoderDecoder as EncoderClass
         else:
             raise ValueError(f"Unknown encoder model: {encoder_model}")
         

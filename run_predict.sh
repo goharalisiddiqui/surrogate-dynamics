@@ -11,16 +11,18 @@
 #SBATCH -o ./slurm_logs/slurm-%J.out
 #SBATCH -e ./slurm_logs/slurm-%J.err
 
+
+
+####### PREPARE ENV #######
+echo "Loading modules from $SLURM_PRESCRIPT_ML"
+source $SLURM_PRESCRIPT_ML
+########################################
+
 unset $pref
 if [ ! -z "${SLURM_JOB_ID}" ]; then
     echo "Running on compute node"
     pref='srun'
     mkdir -p slurm_logs
-
-    ####### PREPARE ENV #######
-    echo "Loading modules from $SLURM_PRESCRIPT_ML"
-    source $SLURM_PRESCRIPT_ML
-    ########################################
 else 
     echo "Running on local machine"
     pref=''

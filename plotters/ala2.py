@@ -22,49 +22,6 @@ def periodic_average(x, period=2*np.pi):
     x2 = np.arctan2(np.mean(np.sin(x[:,1])), np.mean(np.cos(x[:,1])))
     return np.array([x1, x2])
 
-class Ala2DataAnalyser():
-    def __init__(self, output_dir):
-        self.output_dir = output_dir
-        os.makedirs(self.output_dir, exist_ok=True)
-    
-    def plot_dihedrals(self, data):
-        idx_phi = 6 # [1,3,4,5]
-        idx_psi = 10 # [3,4,6,8]
-
-        sin_phi, cos_phi, sin_psi, cos_psi = [], [], [], []
-        for d in tqdm(data, desc="Processing dihedrals"):
-            sin_phi.append(d.y_torsions_sin[idx_phi].cpu().numpy())
-            cos_phi.append(d.y_torsions_cos[idx_phi].cpu().numpy())
-            sin_psi.append(d.y_torsions_sin[idx_psi].cpu().numpy())
-            cos_psi.append(d.y_torsions_cos[idx_psi].cpu().numpy())
-
-        phi = np.arctan2(sin_phi, cos_phi)
-        psi = np.arctan2(sin_psi, cos_psi)
-
-        fig, ax = plt.subplots(2, 1, figsize=(7,5))
-        ax[0].scatter(range(len(phi)), phi, marker='+', s=1)
-        ax[0].set_ylabel(r"$\Phi$")
-        ax[0].set_ylim([-np.pi, np.pi])
-        ax[0].set_yticks([-np.pi, -np.pi/2, 0, np.pi/2, np.pi])
-        ax[0].set_yticklabels([r"$-\pi$", r"$-\pi/2$", "0", r"$\pi/2$", r"$\pi$"])
-
-
-        ax[1].scatter(range(len(psi)), psi, marker='+', s=1)
-        ax[1].set_ylabel(r"$\Psi$")
-        ax[1].set_xlabel("Frame")
-        ax[1].set_ylim([-np.pi, np.pi])
-        ax[1].set_yticks([-np.pi, -np.pi/2, 0, np.pi/2, np.pi])
-        ax[1].set_yticklabels([r"$-\pi$", r"$-\pi/2$", "0", r"$\pi/2$", r"$\pi$"])
-        fig.savefig(self.output_dir + "/dihedrals.png", dpi=300)
-        print(f"\n[{type(self).__name__}]: Saved dihedral plot to {self.output_dir}/dihedrals.png")
-
-    def write_data(self, data):
-        print(f"\n[{type(self).__name__}]: Writing data analysis to {self.output_dir}")
-        print("="*80)
-        self.plot_dihedrals(data)
-        print("="*80)
-
-
 class Ala2Writer(BasePredictionWriter):
     def __init__(self, output_dir, write_interval, config = {}):
         super().__init__(write_interval)

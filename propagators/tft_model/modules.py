@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from propagators.tft_parts.utils import MonteCarloDropout
+from propagators.tft_model.utils import MonteCarloDropout
 
 
 HiddenState = Union[tuple[torch.Tensor, torch.Tensor], torch.Tensor]

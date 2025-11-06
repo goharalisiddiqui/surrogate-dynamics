@@ -4,12 +4,19 @@
 #SBATCH -n 1
 #SBATCH -c 8
 #SBATCH -p gpucloud
-#SBATCH --mem=20G
-#SBATCH --gres=shard:5
+#SBATCH --mem=60G
+#SBATCH --gres=shard:4
 #SBATCH --time=100:00:00
 #SBATCH --export=ALL
 #SBATCH -o ./slurm_logs/slurm-%J.out
 #SBATCH -e ./slurm_logs/slurm-%J.err
+
+
+####### PREPARE ENV #######
+echo "Loading modules from $SLURM_PRESCRIPT_ML"
+source $SLURM_PRESCRIPT_ML
+########################################
+
 
 unset $pref
 if [ ! -z "${SLURM_JOB_ID}" ]; then
@@ -17,10 +24,6 @@ if [ ! -z "${SLURM_JOB_ID}" ]; then
     pref='srun'
     mkdir -p slurm_logs
 
-    ####### PREPARE ENV #######
-    echo "Loading modules from $SLURM_PRESCRIPT_ML"
-    source $SLURM_PRESCRIPT_ML
-    ########################################
 else 
     echo "Running on local machine"
     pref=''

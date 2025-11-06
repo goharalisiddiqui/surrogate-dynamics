@@ -16,10 +16,10 @@ from torch import nn
 from torch.nn import LSTM as _LSTM
 
 # from darts.logging import get_logger, raise_if, raise_if_not, raise_log
-from propagators.tft_parts.components import glu_variants, layer_norm_variants
-from propagators.tft_parts.components.glu_variants import GLU_FFN
+from propagators.tft_model.components import glu_variants, layer_norm_variants
+from propagators.tft_model.components.glu_variants import GLU_FFN
 
-from propagators.tft_parts.modules import (
+from propagators.tft_model.modules import (
     _GateAddNorm,
     _GatedResidualNetwork,
     _InterpretableMultiHeadAttention,

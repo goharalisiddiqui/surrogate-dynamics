@@ -51,7 +51,7 @@ if config['debug']:
 # Importing Lightning Modules
 ##################################
 if config['propagator_name'] == "TFT":
-    from propagators.tft_net import TFTModel as PropagatorModel
+    from propagators.tft import PropagatorTFT as PropagatorModel
 elif config['propagator_name'] == "BGE_TFT":
     from propagators.bge_tft import BondGraphEncoderTFT as PropagatorModel
 else:
@@ -114,7 +114,7 @@ assert os.path.isfile(config['propagator_ckpt']), "Propagator model path does no
 # Creating Dataset
 ##################################
 datamod_args = config['data_args'].copy()
-if config['pred_only']:
+if config.get('pred_only', False):
     # Peek in the model to get the required input length
     hpr = torch.load(config['propagator_ckpt'], map_location='cpu')['hyper_parameters']
     input_chunk_length = hpr['propagator_args']['input_chunk_length']
@@ -127,7 +127,11 @@ datamod = DataModule(**datamod_args)
 ##################################
 print(f"\n\n[Loading propagator model {PropagatorModel.__name__}]")
 print("========================================")
-prop = PropagatorModel.load_from_checkpoint(config['propagator_ckpt'], datamodule=datamod)
+try:
+    prop = PropagatorModel.load_from_checkpoint(config['propagator_ckpt'], datamodule=datamod)
+except Exception as e:
+    raise RuntimeError(f"Error loading the propagator model from checkpoint \n"
+                       "Check if the model architecture matches the checkpoint.")
 print("Loaded propagator model from: ", config['propagator_ckpt'])
 print("Model details:")
 for name, param in prop.hparams.items():

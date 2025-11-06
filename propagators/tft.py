@@ -19,31 +19,11 @@ import pytorch_lightning as pl
 from tqdm import tqdm
 
 from propagators.tft_model.tft import ModifiedTFTModel as TFTModel
-from collective_encoder.nets.bge import BondGraphNetEncoderDecoder
 
-class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
-    """LightningModule wrapper for BondGraphNet.
-
-    Args:
-        datamodule: PyTorch Lightning DataModule with training/validation/test dataloaders.
-        encoder_args: Dict of args for BondGraphNetEncoder.
-        decoder_args: Dict of args for BondGraphNetDecoder.
-        propagator_args: Dict of args for TFTModel.
-        prop_likelihood: Darts likelihood model for propagator outputs.
-        lr: Learning rate for AdamW optimizer.
-        weight_decay: Weight decay for AdamW optimizer.
-        normIn: Whether to normalize input features (using datamodule statistics).
-        scheduler: Whether to use a learning rate scheduler (ReduceLROnPlateau).
-        loss_weights: Optional list of 4 floats to weight the 4 loss components.
-        loss_latent_weight: Weight for latent MSE loss (default 1e-3).
-        out_labels: List of 4 strings naming the output components (default ['bond_dist', 'angle', 'dihedral_cos', 'dihedral_sin']).
-        outname: Prefix for saving model checkpoints and outputs.
-    """
+class PropagatorTFT(pl.LightningModule):
     def __init__(
         self,
-        datamodule,
-        encoder_args: Dict[str, Union[int, float]],
-        decoder_args: Dict[str, Union[int, float]],
+        encdec_model: nn.Module,
         propagator_args: Dict[str, Union[int, float]],
         likelihood: str = 'QuantileRegression',
         likelihood_args: Optional[Dict] = None,
@@ -52,30 +32,13 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
         normIn: Optional[bool] = False,
         scheduler: Optional[bool] = False,
         scheduler_args: Optional[Dict] = None,
-        loss_fn: Optional[nn.Module] = None,
-        loss_encdec_weights: Optional[List[float]] = None,
-        loss_prop_weight: Optional[float] = 1.0,
-        loss_rec_weight: Optional[float] = 1.0,
-        loss_e2e_weight: Optional[float] = 1.0,
         out_labels: Optional[List[str]] = ['bond_dist', 'angle', 'dihedral_cos', 'dihedral_sin'],
-        outname: Optional[str] = './BGETFT_untitled/BGETFT_',
+        outname: Optional[str] = './TFT_untitled/TFT_',
     ):
-        self.save_hyperparameters(ignore=["datamodule"])
-        super().__init__(
-            datamodule=datamodule,
-            encoder_args=encoder_args,
-            decoder_args=decoder_args,
-            lr=lr,
-            weight_decay=weight_decay,
-            normIn=normIn,
-            scheduler=scheduler,
-            scheduler_args=scheduler_args,
-            loss_fn=loss_fn,
-            loss_weights=loss_encdec_weights,
-            out_labels=out_labels,
-            outname=outname,
-        )
+        self.save_hyperparameters()
+        super().__init__()
 
+        self.latent_dim = encdec_model.latent_dim
         self.sequence_length = (
             propagator_args['input_chunk_length'] + 
             propagator_args['output_chunk_length']
@@ -128,12 +91,22 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
             "norm_type": 'LayerNorm',
         }
         self.propagator = TFTModel(**prop_keywargs)
+        self.encdec_model = encdec_model
+        self.encdec_model.eval()
+        for param in self.encdec_model.parameters():
+            param.requires_grad = False  # Freeze encoder-decoder
+        
+        if scheduler:
+            self.scheduler_args = {
+                'factor': 0.7, 
+                'patience': 5, 
+                'min_lr': 1e-9
+            }
+            if scheduler_args is not None:
+                self.scheduler_args.update(scheduler_args)
 
     def forward(self, data):
-
-        data = self.normalize(data)
-        latent = self.gnn_enc(data)
-        pred = self.gnn_dec(latent)
+        pred, latent = self.encdec_model(data)
 
         prop_latent = latent.view(-1, self.sequence_length, self.latent_dim)
         prop_in = prop_latent[:, :self.propagator.input_chunk_length, :]
@@ -141,7 +114,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
         prop_out = self.propagator((prop_in, None, None))
 
         prop_sample = self.likelihood.sample(prop_out)
-        prop_dec = self.gnn_dec(prop_sample.view(-1, self.latent_dim))
+        prop_dec = self.encdec_model.decode(prop_sample.view(-1, self.latent_dim))
         # pred = self.denormalize(pred)
         return pred, latent, prop_out, prop_dec
 
@@ -158,63 +131,16 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
             self.log(f"{stage}_prop_mae", mae_prop, prog_bar=(stage!="train"), on_epoch=True, batch_size=batch_size)
 
         return loss_prop
-
-    def loss_e2e(self, prop_dec, labels, stage: str, batch_size=None):
-        losses = {}
-        for out_label, weight in zip(self.hparams['out_labels'], self.loss_encdec_weights):
-            label = labels[out_label]
-            label = label.view(-1, self.sequence_length, label.shape[-1])
-            label = label[:, -self.propagator.output_chunk_length:, :]
-            label = label.contiguous().view(-1, label.shape[-1])
-            losses[out_label] = self.loss_fn(prop_dec[out_label], label) * weight
-            self.log(f"{stage}_e2e_{out_label}_loss", losses[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
-        
-        self.log(f"{stage}_e2e_loss", sum(losses.values()), 
-                 prog_bar=(stage=="train"), on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)
-
-        with torch.no_grad():
-            mae = {}
-            for out_label in self.hparams['out_labels']:
-                label = labels[out_label]
-                label = label.view(-1, self.sequence_length, label.shape[-1])
-                label = label[:, -self.propagator.output_chunk_length:, :]
-                label = label.contiguous().view(-1, label.shape[-1])
-                mae[out_label] = (torch.abs(prop_dec[out_label] - label).mean() 
-                                if label.numel() > 0 
-                                else torch.tensor(0.0, device=prop_dec[out_label].device))
-                self.log(f"{stage}_e2e_{out_label}_mae", mae[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
-            self.log(f"{stage}_e2e_mae", sum(mae.values()) / len(mae), 
-                     prog_bar=(stage!="train"), on_epoch=True, batch_size=batch_size)
-
-        return sum(losses.values())
     
     def step(self, batch, stage: str):
         pred, latent, prop_out, prop_dec = self.forward(batch)
-        labels = self.extract_labels(batch)
 
         batch_size = self.trainer.datamodule.hparams.batch_size if self.trainer and self.trainer.datamodule else None
-
-        # Reconstruction loss of encoder-decoder
-        if self.hparams.loss_rec_weight > 0.0:
-            loss_encdec = self.loss_encdec(pred, labels, stage, batch_size=batch_size)
-        else:
-            loss_encdec = torch.tensor(0.0, device=latent.device)
         
         # Propagation loss in latent space
-        if self.hparams.loss_prop_weight > 0.0:
-            loss_prop = self.loss_prop(prop_out, latent, stage, batch_size=self.sequence_length)
-        else:
-            loss_prop = torch.tensor(0.0, device=latent.device)
+        loss_prop = self.loss_prop(prop_out, latent, stage, batch_size=self.sequence_length)
 
-        # End-to-end loss of propagated decoded structures
-        if self.hparams.loss_e2e_weight > 0.0:
-            loss_e2e = self.loss_e2e(prop_dec, labels, stage, batch_size=batch_size)
-        else:
-            loss_e2e = torch.tensor(0.0, device=latent.device)
-
-        loss = (self.hparams.loss_rec_weight * loss_encdec 
-                + self.hparams.loss_prop_weight * loss_prop
-                + self.hparams.loss_e2e_weight * loss_e2e)
+        loss = loss_prop
         
         self.log(f"{stage}_loss", loss, prog_bar=(stage=="train"), 
                  on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)
@@ -244,8 +170,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
         self.predict_steps = steps
 
     def predict_step(self, batch, batch_idx):
-        data = self.normalize(batch)
-        latent = self.gnn_enc(data)
+        latent = self.encdec_model.encode(batch)
 
         if hasattr(self, 'predict_steps'):
             predict_steps = self.predict_steps
@@ -272,7 +197,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
             for k in gnn_out:
                 gnn_out[k] = torch.cat(gnn_out[k], dim=0)
         else:
-            gnn_out = self.gnn_dec(prop_out)
+            gnn_out = self.encdec_model.decode(prop_out)
 
         pred = { "Predicted":{
             'bond_dist': gnn_out['bond_dist'],
@@ -297,6 +222,26 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
             }
 
         return pred
+
+    def training_step(self, batch, batch_idx):
+        return self.step(batch, "train")
+
+    def validation_step(self, batch, batch_idx):
+        self.step(batch, "val")
+
+    def test_step(self, batch, batch_idx):
+        self.step(batch, "test")
+
+    def configure_optimizers(self):
+        opt = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        if self.hparams.scheduler:
+            sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 
+                                                            mode='min', 
+                                                           factor=self.scheduler_args['factor'], 
+                                                           patience=self.scheduler_args['patience'], 
+                                                           min_lr=self.scheduler_args['min_lr'])
+            return {"optimizer": opt, "lr_scheduler": sched, "monitor": "val_loss"}
+        return opt
 
 __all__ = ["BondGraphEncoderTFT"]
 

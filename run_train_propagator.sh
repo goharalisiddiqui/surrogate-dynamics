@@ -38,7 +38,7 @@ do
 done
 
 if [ "$debug" == 1 ]; then
-    $pref python collective_encoder/engine.py --config config_train_encoder.yaml --debug
+    $pref python trainer.py --config config_train_propagator.yaml --debug
 else
-    $pref python collective_encoder/engine.py --config config_train_encoder.yaml
+    $pref python trainer.py --config config_train_propagator.yaml
 fi

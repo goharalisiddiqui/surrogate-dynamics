@@ -150,11 +150,11 @@ class XtcSequence(pl.LightningDataModule):
             dataset_class = XtcData
             self.dl_cls = DataLoader
         elif dataset_type == 'DISTANCES':
-            from collective_encoder.datasets.distances_dataset import distancesDataset as dataset_class
+            from collective_encoder.datasets.distances import DistancesDataset as dataset_class
             dataset_args['atm_ids'] = atm_ids
             self.dl_cls = DataLoader
         elif dataset_type == 'GRAPH':
-            from collective_encoder.datasets.graph import graphDataset as dataset_class
+            from collective_encoder.datasets.bondgraph import BondGraphDataset as dataset_class
             dataset_args['bond_indices'] = self.bonds
             self.dl_cls = GeoDataLoader
         else:
