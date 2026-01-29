@@ -4,8 +4,8 @@
 #SBATCH -n 1
 #SBATCH -c 8
 #SBATCH -p gpucloud
-#SBATCH --mem=60G
-#SBATCH --gres=shard:4
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:rtx_6000_ada:1
 #SBATCH --time=100:00:00
 #SBATCH --export=ALL
 #SBATCH -o ./slurm_logs/slurm-%J.out
@@ -38,7 +38,7 @@ do
 done
 
 if [ "$debug" == 1 ]; then
-    $pref python trainer.py --config config_train.yaml --debug
+    $pref python trainer.py --config config_train_e2e.yaml --debug
 else
-    $pref python trainer.py --config config_train.yaml
+    $pref python trainer.py --config config_train_e2e.yaml
 fi

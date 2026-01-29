@@ -18,6 +18,7 @@ from torch_geometric.utils import softmax
 import pytorch_lightning as pl
 from tqdm import tqdm
 
+from likelihoods.resolver import LikelihoodResolver
 from propagators.tft_model.tft import ModifiedTFTModel as TFTModel
 
 class PropagatorTFT(pl.LightningModule):
@@ -43,20 +44,7 @@ class PropagatorTFT(pl.LightningModule):
             propagator_args['input_chunk_length'] + 
             propagator_args['output_chunk_length']
         )
-        if likelihood == 'QuantileRegression':
-            from darts.utils.likelihood_models import QuantileRegression
-            quantiles = likelihood_args.get('quantiles', [0.5]) if likelihood_args else [0.5]
-            assert all(isinstance(q, float) and 0.0 < q < 1.0 for q in quantiles), "quantiles must be between 0 and 1"
-            self.likelihood = QuantileRegression(quantiles=quantiles)
-        elif likelihood == 'Gaussian':
-            from darts.utils.likelihood_models import GaussianLikelihood
-            prior_mu = likelihood_args.get('prior_mu', None) if likelihood_args else None
-            prior_sigma = likelihood_args.get('prior_sigma', None) if likelihood_args else None
-            prior_strength = likelihood_args.get('prior_strength', 1.0) if likelihood_args else 1.0
-            beta_nll = likelihood_args.get('beta_nll', 0.0) if likelihood_args else 0.0
-            self.likelihood = GaussianLikelihood(prior_mu=prior_mu, prior_sigma=prior_sigma, prior_strength=prior_strength, beta_nll=beta_nll)
-        else:
-            raise ValueError(f"Unsupported likelihood: {likelihood}")
+        self.likelihood = LikelihoodResolver(likelihood, likelihood_args or {})
         # Initialize propagator
         (
             variables_meta, 
@@ -106,7 +94,8 @@ class PropagatorTFT(pl.LightningModule):
                 self.scheduler_args.update(scheduler_args)
 
     def forward(self, data):
-        pred, latent = self.encdec_model(data)
+        with torch.no_grad():
+            pred, latent = self.encdec_model(data)
 
         prop_latent = latent.view(-1, self.sequence_length, self.latent_dim)
         prop_in = prop_latent[:, :self.propagator.input_chunk_length, :]
@@ -165,9 +154,13 @@ class PropagatorTFT(pl.LightningModule):
         
         return prop_out
     
-    def set_predict_steps(self, steps: int):
+    def set_predict_settings(self, **kwargs):
+        steps = kwargs.get('predict_steps', None)
+        temperature = kwargs.get('sampling_temperature', 1.0)
+        
         assert steps >= self.sequence_length, f"predict_steps must be at least {self.sequence_length}"
         self.predict_steps = steps
+        self.sampling_temperature = temperature
 
     def predict_step(self, batch, batch_idx):
         latent = self.encdec_model.encode(batch)
@@ -189,7 +182,7 @@ class PropagatorTFT(pl.LightningModule):
             gnn_out = {}
             for i in range(0, predict_steps, 1000):
                 chunk = prop_out[i:i+1000, :].contiguous()
-                chunk_out = self.gnn_dec(chunk)
+                chunk_out = self.encdec_model.decode(chunk)
                 for k, v in chunk_out.items():
                     if k not in gnn_out:
                         gnn_out[k] = []
@@ -213,7 +206,7 @@ class PropagatorTFT(pl.LightningModule):
                 'dihedral_cos': batch.y_torsions_cos.view(predict_steps, -1),
                 'dihedral_sin': batch.y_torsions_sin.view(predict_steps, -1),
             }
-            latent_dec = self.gnn_dec(latent)
+            latent_dec = self.encdec_model.decode(latent)
             pred['Decoded'] = {
                 'bond_dist': latent_dec['bond_dist'],
                 'angle': latent_dec['angle'],

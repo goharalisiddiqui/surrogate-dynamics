@@ -60,7 +60,7 @@ else:
 if config['dynamics_name'] == 'XTC_latent':
     from dataloaders.xtc_latent import XtcTrainer as DataModule
 elif config['dynamics_name'] == 'XTC_graph':
-    from dataloaders.xtc_graph import XtcSequence as DataModule
+    from collective_encoder.dataloaders.default import DefaultDatamodule as DataModule
 else:
     raise ValueError("Unknown data type")
 
@@ -114,13 +114,21 @@ assert os.path.isfile(config['propagator_ckpt']), "Propagator model path does no
 # Creating Dataset
 ##################################
 datamod_args = config['data_args'].copy()
-if config.get('pred_only', False):
-    # Peek in the model to get the required input length
-    hpr = torch.load(config['propagator_ckpt'], map_location='cpu')['hyper_parameters']
-    input_chunk_length = hpr['propagator_args']['input_chunk_length']
-    datamod_args['predict_steps'] = input_chunk_length
+# Peek in the model to get the required input length
+hpr = torch.load(config['propagator_ckpt'], map_location='cpu')['hyper_parameters']
+input_chunk_length = hpr['propagator_args']['input_chunk_length']
+output_chunk_length = hpr['propagator_args']['output_chunk_length']
+predict_steps = datamod_args.pop('predict_steps', None)
+if predict_steps is None:
+    raise ValueError("predict_steps must be specified in data_args in the config file")
+if predict_steps < input_chunk_length:
+    raise ValueError("predict_steps must be greater than or equal to input_chunk_length")
+if config.get('plot_decoded', False):
+    datamod_args['train_size'] = predict_steps
+else:
+    datamod_args['train_size'] = input_chunk_length
+datamod_args['batch_size'] = datamod_args['train_size']
 datamod = DataModule(**datamod_args)
-
 
 ##################################
 # Loding trained propagator model
@@ -155,7 +163,10 @@ predictor_args['accelerator'] = "cpu"
 predictor_args['devices'] = 1
 predictor_args['callbacks'] = [pred_writer]
 
-prop.set_predict_steps(config['data_args']['predict_steps'])
+prop.set_predict_settings(
+    predict_steps=config['data_args']['predict_steps'],
+    sampling_temperature=config.get('sampling_temperature', 1.0)
+)
 trainer = pl.Trainer(**predictor_args)
 
 trainer.predict(prop, datamodule=datamod, return_predictions=False)

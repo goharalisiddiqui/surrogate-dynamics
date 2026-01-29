@@ -413,7 +413,7 @@ class ModifiedTFTModel(nn.Module):
             },
             "model_config": {},
         }
-
+        
         reals_input = []
         categorical_input = []
         time_varying_encoder_input = []
@@ -443,7 +443,9 @@ class ModifiedTFTModel(nn.Module):
                             i for i in range(static_covariates.shape[1])
                         ])
                     else:
-                        static_cols = static_covariates.columns
+                        static_cols = pd.Index([
+                            i for i in range(static_covariates.shape[1])
+                        ])
                     numeric_mask = ~static_cols.isin(categorical_embedding_sizes)
                     for idx, (static_var, col_name, is_numeric) in enumerate(
                         zip(vars_meta, static_cols, numeric_mask)
@@ -713,6 +715,8 @@ class ModifiedTFTModel(nn.Module):
                 device=device,
             )
             static_covariate_var = None
+        
+        
 
         static_context_expanded = self.expand_static_context(
             context=self.static_context_grn(static_embedding), time_steps=time_steps
@@ -751,7 +755,9 @@ class ModifiedTFTModel(nn.Module):
         encoder_out, (hidden, cell) = self.lstm_encoder(
             input=embeddings_varying_encoder, hx=(input_hidden, input_cell)
         )
-
+        # print("\n\n")
+        # print(hidden.shape, cell.shape)
+        # exit()
         # run local lstm decoder
         decoder_out, _ = self.lstm_decoder(
             input=embeddings_varying_decoder, hx=(hidden, cell)

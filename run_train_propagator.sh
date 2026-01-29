@@ -4,8 +4,8 @@
 #SBATCH -n 1
 #SBATCH -c 8
 #SBATCH -p gpucloud
-#SBATCH --mem=60G
-#SBATCH --gres=shard:4
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:rtx_4000_ada:1
 #SBATCH --time=100:00:00
 #SBATCH --export=ALL
 #SBATCH -o ./slurm_logs/slurm-%J.out

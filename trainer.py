@@ -5,11 +5,7 @@ import argparse
 import yaml
 import warnings
 
-import torch
-
 import wandb
-
-from darts.utils.likelihood_models import QuantileRegression
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
@@ -55,15 +51,23 @@ if config['debug']:
     config['overwrite'] = True
     config['wandb'] = False
     config['output_to_file'] = True
+    
+    config['encoder_args']['hidden_dim'] = 8
+    config['encoder_args']['num_layers'] = 2
+    
+    config['decoder_args']['hidden_dim'] = 8
+    config['decoder_args']['num_layers'] = 2
 
     config['propagator_args']['input_chunk_length'] = 2
     config['propagator_args']['output_chunk_length'] = 2
+    config['propagator_args']['hidden_dim'] = 8
 
     config['data_args']['num_workers'] = 1
-    config['data_args']['train_size'] = 10
-    config['data_args']['validation_size'] = 6
+    config['data_args']['train_size'] = 2
+    config['data_args']['validation_size'] = 2
     config['data_args']['batch_size'] = 2
     config['data_args']['val_batch_size'] = 2
+    config['data_args']['n_seq_per_sample'] = 8
     print("Running in debug mode")
 
 ##################################
@@ -73,6 +77,8 @@ if config['propagator_name'] == "TFT":
     from propagators.tft import PropagatorTFT as dyn_surrogate
 elif config['propagator_name'] == "BGE_TFT":
     from propagators.bge_tft import BondGraphEncoderTFT as dyn_surrogate
+elif config['propagator_name'] == "BGE_TFT_V2":
+    from propagators.bge_tft_v2 import BondGraphEncoderTFT as dyn_surrogate
 else:
     raise ValueError("Unknown propagator type: " + config['propagator_name'])
 
@@ -86,7 +92,7 @@ if config['propagator_name'] == "TFT":
         raise ValueError("Unknown encoder type: " + encdec_name)
 
 if config['dynamics_name'] == 'XTC_graph':
-    from dataloaders.xtc_graph import XtcSequence as main_dl
+    from dataloaders.sequence import SequenceDatamodule as main_dl
 else:
     raise ValueError("Unknown data type: " + config['dynamics_name'])
 
@@ -131,10 +137,20 @@ if config['output_to_file']:
 ##################################
 # Creating Dataset
 ##################################
-config['data_args']['sequence_length'] = (
-    config['propagator_args']['input_chunk_length'] +
-    config['propagator_args']['output_chunk_length']
-)
+input_chunk_length = config['propagator_args']['input_chunk_length']
+output_chunk_length = config['propagator_args']['output_chunk_length']
+n_seq_per_sample = config['data_args'].pop('n_seq_per_sample', 1)
+config['data_args']['input_chunk_length'] = input_chunk_length
+config['data_args']['output_chunk_length'] = output_chunk_length
+config['data_args']['num_chunks_per_sequence'] = n_seq_per_sample
+config['data_args']['datareader_type'] = config['data_args'].get('datareader_type', 'XTC_CHUNKS')
+config['data_args']['datareader_args'] = {
+    'xtcfile': config['data_args'].pop('xtcfile', None),
+    'tprfile': config['data_args'].pop('tprfile', None),
+    'selection': config['data_args'].pop('selection', None),
+}
+if config['data_args']['datareader_type'] == 'XTC_CHUNKS_CG':
+    config['data_args']['datareader_args']['cg_window'] = config['data_args'].pop('cg_window', 1)
 data_set = main_dl(**config['data_args'])
 
 if config.get('data_analyser', None):
@@ -151,13 +167,20 @@ if config.get('data_analyser', None):
 ##################################
 
 # Setup PL callbacks
+cbs = []
+
 lr_monitor = LearningRateMonitor(logging_interval='epoch')
-early_stop = EarlyStopping(monitor='val_loss',
-                           mode='min',
-                           patience=100,
-                           min_delta=1e-8,
-                           verbose=True,
-                           )
+cbs.append(lr_monitor)
+
+if config.get('early_stopping', True):
+    early_stop = EarlyStopping(monitor='val_loss',
+                            mode='min',
+                            patience=config.get('early_stopping_args', {}).get('patience', 100),
+                            min_delta=config.get('early_stopping_args', {}).get('min_delta', 1e-8),
+                            verbose=True
+                            )
+    cbs.append(early_stop)
+
 checkpoint_callback = ModelCheckpoint(
     monitor='val_loss',
     dirpath=odir_name + '/checkpoints',
@@ -165,7 +188,7 @@ checkpoint_callback = ModelCheckpoint(
     save_top_k=1,
     mode='min',
 )
-cbs = [lr_monitor, checkpoint_callback, early_stop]
+cbs.append(checkpoint_callback)
 
 # Setup wandb logger
 if config.get('wandb', False):
@@ -188,14 +211,15 @@ if config['propagator_name'] == "TFT":
         raise ValueError("Encoder-decoder checkpoint path must be specified for TFT propagator")
     encdec = EncDecModel.load_from_checkpoint(encdec_ckpt, datamodule=data_set)
     prop_args['encdec_model'] = encdec
-
-elif config['propagator_name'] == "BGE_TFT":
+elif config['propagator_name'] in ["BGE_TFT", "BGE_TFT_V2"]:
     prop_args['datamodule'] = data_set
     prop_args['encoder_args'] = config['encoder_args']
     prop_args['decoder_args'] = config['decoder_args']
     prop_args['loss_prop_weight'] = config['loss_prop_weight']
+    prop_args['loss_prop_start'] = config.get('loss_prop_start', 0)
     prop_args['loss_rec_weight'] = config['loss_rec_weight']
     prop_args['loss_e2e_weight'] = config['loss_e2e_weight']
+    prop_args['loss_encdec_weights'] = config['loss_encdec_weights']
 else:
     raise ValueError("Unknown propagator type")
 
@@ -219,8 +243,11 @@ trainer_args['callbacks'] = cbs
 if config.get('wandb', False):
     logger.experiment.config.update(prop_args)
 
-
-model = dyn_surrogate(**prop_args)
+if config.get('load_ckpt', None) is not None:
+    print("Loading model from checkpoint: " + config['load_ckpt'])
+    model = dyn_surrogate.load_from_checkpoint(config['load_ckpt'], **prop_args)
+else:
+    model = dyn_surrogate(**prop_args)
 
 #########################################
 # Training the Surrogate Propagator

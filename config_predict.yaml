@@ -1,27 +1,30 @@
 debug: False
-outpath: ./predict_runs/tft
+outpath: ./predict_runs/tft/cg/gaussian_regression
 outfolder: run_test
 overwrite: True
 nexp: 1
-output_to_file: True
-nogpu: False
-pred_only: True
+output_to_file: True 
+plot_decoded: True
+
 
 #####################################################################
 # E2E Model of Ala2
 #####################################################################
 dynamics_name: XTC_graph
 data_args:
-    xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
-    tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
-    selection: "(resname ALA or resname ACE or resname NME) and not element H"
+    datareader_type: "XTC"
+    datareader_args:
+        xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
+        tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
+        selection: "(resname ALA or resname ACE or resname NME) and not element H"
     dataset_type : "GRAPH"
-    predict_steps : 1000
+    predict_steps : 50
     # predict_batch_size : 800
 
 propagator_name: TFT
-propagator_ckpt: ./train_runs/tft/run_1/checkpoints/best.ckpt
-# propagator_ckpt: ./train_runs/tft_e2e_gaussian_test/run_1/checkpoints/saved.ckpt
+propagator_ckpt: ./train_runs/tft/cg/gaussian_regression/run_1/checkpoints/best.ckpt
+sampling_temperature: 2.0
+# propagator_ckpt: ./train_runs/tft_e2e_gaussian/run_20/checkpoints/best.ckpt
 
 writer_name: ala2
 writer_args:

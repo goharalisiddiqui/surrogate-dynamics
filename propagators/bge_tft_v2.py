@@ -1,4 +1,4 @@
-from typing import Callable, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import torch
 from torch import nn
@@ -8,6 +8,11 @@ from tqdm import tqdm
 from likelihoods.resolver import LikelihoodResolver
 from propagators.tft_model.tft import ModifiedTFTModel as TFTModel
 from collective_encoder.nets.bge import BondGraphNetEncoderDecoder
+
+
+"""
+Modified BondGraphEncoderTFT with static covariates support in TFT.
+"""
 
 class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
     """LightningModule wrapper for BondGraphNet.
@@ -81,7 +86,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
             output_chunk_length = propagator_args['output_chunk_length'],
             n_past_covariates = 0,
             n_future_covariates = 0,
-            n_static_covariates = 0,
+            n_static_covariates = propagator_args['hidden_dim'],
             n_targets = self.latent_dim,
             add_relative_index = True,
             likelihood = self.likelihood,
@@ -106,20 +111,24 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
         self.propagator = TFTModel(**prop_keywargs)
 
     def forward(self, data):
-        data = self.normalize(data) # Normalize input features
-        latent = self.gnn_enc(data) # Encode to latent space
-        pred = self.gnn_dec(latent) # Decode to output predictions
+
+        data = self.normalize(data)
+        latent = self.gnn_enc(data)
+        pred = self.gnn_dec(latent)
         
-        long_seq_length = self.trainer.datamodule.sequence_length # This is the length of one input sequence
-        prop_latent = latent.view(-1, long_seq_length, self.latent_dim) # (Batch, Sequence, Latent Dim)
+        long_seq_length = self.trainer.datamodule.sequence_length
         
-        # We want to create the whole prediction of whole input sequence
-        # self.sequence_length is (input_chunk_length + output_chunk_length)
+        prop_latent = latent.view(-1, long_seq_length, self.latent_dim)
+        
         i = 0
+        static_covs = torch.zeros(prop_latent.size(0),
+                                  1, 
+                                  self.propagator.hidden_size, 
+                                  device=prop_latent.device)
         while i+self.sequence_length <= long_seq_length:
-            prop_in = prop_latent[:, i:i+self.propagator.input_chunk_length, :] # We take the input sequence always from encoded latent (Batch, T_in, Latent Dim)
+            prop_in = prop_latent[:, i:i+self.propagator.input_chunk_length, :]
             # TFT expects (B, T, C) inputs; returns (B, T_out, C)
-            prop_out_chunk = self.propagator((prop_in, None, None)) # (Batch, T_out, Latent Dim)
+            prop_out_chunk = self.propagator((prop_in, None, static_covs))
             if i == 0:
                 prop_out = prop_out_chunk
             else:
@@ -148,35 +157,29 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
         return loss_prop
 
     def loss_e2e(self, prop_dec, labels, stage: str, batch_size=None):
-        long_seq_length = self.trainer.datamodule.sequence_length
         losses = {}
-        mae = {}
-        for out_label, weight in zip(self.hparams.out_labels, 
-                                     self.hparams.loss_encdec_weights):
+        for out_label, weight in zip(self.hparams['out_labels'], self.loss_encdec_weights):
             label = labels[out_label]
-            label = label.view(-1, long_seq_length, label.shape[-1])
-            label = label[:, self.propagator.input_chunk_length:, :]
+            label = label.view(-1, self.sequence_length, label.shape[-1])
+            label = label[:, -self.propagator.output_chunk_length:, :]
             label = label.contiguous().view(-1, label.shape[-1])
             losses[out_label] = self.loss_fn(prop_dec[out_label], label) * weight
-            
-            self.log(f"{stage}_e2e_{out_label}_loss", 
-                     losses[out_label], prog_bar=False, 
-                     on_epoch=True, batch_size=batch_size)
-            
-            with torch.no_grad():
-                mae[out_label] = (torch.abs(prop_dec[out_label] - label).mean() 
-                                    if label.numel() > 0 
-                                    else torch.tensor(0.0, 
-                                            device=prop_dec[out_label].device))
-                self.log(f"{stage}_e2e_{out_label}_mae", 
-                         mae[out_label], prog_bar=False, 
-                         on_epoch=True, batch_size=batch_size)
+            self.log(f"{stage}_e2e_{out_label}_loss", losses[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
         
         self.log(f"{stage}_e2e_loss", sum(losses.values()), 
-                 prog_bar=(stage=="train"), on_step=(stage=="train"), 
-                 on_epoch=True, batch_size=batch_size)
+                 prog_bar=(stage=="train"), on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)
 
         with torch.no_grad():
+            mae = {}
+            for out_label in self.hparams['out_labels']:
+                label = labels[out_label]
+                label = label.view(-1, self.sequence_length, label.shape[-1])
+                label = label[:, -self.propagator.output_chunk_length:, :]
+                label = label.contiguous().view(-1, label.shape[-1])
+                mae[out_label] = (torch.abs(prop_dec[out_label] - label).mean() 
+                                if label.numel() > 0 
+                                else torch.tensor(0.0, device=prop_dec[out_label].device))
+                self.log(f"{stage}_e2e_{out_label}_mae", mae[out_label], prog_bar=False, on_epoch=True, batch_size=batch_size)
             self.log(f"{stage}_e2e_mae", sum(mae.values()) / len(mae), 
                      prog_bar=(stage!="train"), on_epoch=True, batch_size=batch_size)
 

@@ -1,5 +1,5 @@
 debug: False
-outpath: ./train_runs/bge
+outpath: ./train_runs/edge_updates/bge
 outfolder: run
 overwrite: False
 nexp: 1
@@ -12,9 +12,19 @@ wandb: True
 wandb_project: SurrogateDynamics
 wandb_entity: goharalisiddiqui-tum
 scheduler: True
-lrate: 0.01
+lrate: 0.001
 loss_encdec_weights: [0.1, 0.1, 0.9, 0.9] # bond, angle, dihedral_cos, dihedral_sin
 data_analyser: ala2
+
+scheduler: True
+scheduler_args:
+    factor: 0.5
+    pateience: 20
+    cooldown: 20
+    min_lr: 0.00000001
+early_stopping: False
+early_stopping_args:
+    patience: 50
 
 data_name: XTC
 data_args:
@@ -24,9 +34,9 @@ data_args:
     dataset_size: 10000
     sequential: False
     train_size : 8000
-    batch_size : 64
+    batch_size : 256
     validation_size : 2000
-    val_batch_size : 64
+    val_batch_size : 256
     dataset_type : "GRAPH"
     num_workers : 4
     norm_type : "minmax"
@@ -38,8 +48,8 @@ encoder_args:
     edge_feat : 3 # Should come from data
     node_embed_dim : 8
     edge_embed_dim : 8
-    hidden_dim : 128
-    num_layers : 2
+    hidden_dim : 256
+    num_layers : 3
     heads : 2
     set2set_steps : 3
     latent_dim : 128
@@ -49,8 +59,8 @@ decoder_args:
     template_khop: 2
     node_embed_dim: 8
     edge_embed_dim: 8
-    hidden_dim: 128
-    num_layers: 2
+    hidden_dim: 256
+    num_layers: 3
     heads: 2
     dropout_mp: 0.0
     dropout_mlp: 0.0
