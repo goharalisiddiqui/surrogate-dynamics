@@ -1,10 +1,10 @@
 debug: False
 outpath: ./predict_runs/tft/cg/gaussian_regression
-outfolder: run_test
+outfolder: train_run_6/run
 overwrite: True
-nexp: 1
+nexp: 4
 output_to_file: True 
-plot_decoded: True
+plot_decoded: False
 
 
 #####################################################################
@@ -18,12 +18,12 @@ data_args:
         tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
         selection: "(resname ALA or resname ACE or resname NME) and not element H"
     dataset_type : "GRAPH"
-    predict_steps : 50
+    predict_steps : 500000
     # predict_batch_size : 800
 
 propagator_name: TFT
-propagator_ckpt: ./train_runs/tft/cg/gaussian_regression/run_1/checkpoints/best.ckpt
-sampling_temperature: 2.0
+propagator_ckpt: ./train_runs/tft/cg/gaussian_regression/run_6/checkpoints/saved.ckpt
+sampling_temperature: 0.2
 # propagator_ckpt: ./train_runs/tft_e2e_gaussian/run_20/checkpoints/best.ckpt
 
 writer_name: ala2

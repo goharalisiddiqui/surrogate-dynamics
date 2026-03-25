@@ -18,10 +18,11 @@ from torch_geometric.utils import softmax
 import pytorch_lightning as pl
 from tqdm import tqdm
 
+from collective_encoder.common.module import CEModule
 from likelihoods.resolver import LikelihoodResolver
 from propagators.tft_model.tft import ModifiedTFTModel as TFTModel
 
-class PropagatorTFT(pl.LightningModule):
+class PropagatorTFT(pl.LightningModule, CEModule):
     def __init__(
         self,
         encdec_model: nn.Module,
@@ -39,12 +40,17 @@ class PropagatorTFT(pl.LightningModule):
         self.save_hyperparameters()
         super().__init__()
 
-        self.latent_dim = encdec_model.latent_dim
+        self.encdec_model = encdec_model
+        self.encdec_model.eval()
+        for param in self.encdec_model.parameters():
+            param.requires_grad = False  # Freeze encoder-decoder
+        self.latent_dim = encdec_model.latent_dim if encdec_model is not None else None
         self.sequence_length = (
             propagator_args['input_chunk_length'] + 
             propagator_args['output_chunk_length']
         )
         self.likelihood = LikelihoodResolver(likelihood, likelihood_args or {})
+        
         # Initialize propagator
         (
             variables_meta, 
@@ -79,10 +85,6 @@ class PropagatorTFT(pl.LightningModule):
             "norm_type": 'LayerNorm',
         }
         self.propagator = TFTModel(**prop_keywargs)
-        self.encdec_model = encdec_model
-        self.encdec_model.eval()
-        for param in self.encdec_model.parameters():
-            param.requires_grad = False  # Freeze encoder-decoder
         
         if scheduler:
             self.scheduler_args = {
@@ -146,7 +148,11 @@ class PropagatorTFT(pl.LightningModule):
         while prop_out.size(1) < predict_steps:
             inp = prop_out[:, -self.propagator.input_chunk_length:, :]
             prop_extra = self.propagator((inp, None, None))
-            prop_extra = self.likelihood.sample(prop_extra)
+            prop_extra = self.likelihood.sample(prop_extra, temperature=self.sampling_temperature)
+            if False: # Add gaussian noise proportional to input variance
+                inp_var = torch.var(inp, dim=(1))
+                noise = torch.randn_like(prop_extra) * torch.sqrt(inp_var + 1e-6)
+                prop_extra = prop_extra + noise
             prop_out = torch.cat([prop_out, prop_extra], dim=1)
             pbar.update(prop_extra.size(1))
         pbar.close()
@@ -161,6 +167,14 @@ class PropagatorTFT(pl.LightningModule):
         assert steps >= self.sequence_length, f"predict_steps must be at least {self.sequence_length}"
         self.predict_steps = steps
         self.sampling_temperature = temperature
+
+    def on_predict_start(self):
+        print('\n')
+        print(''.join(['=']*16))
+        print(f"Prediction settings:")
+        print(f"  predict_steps: {getattr(self, 'predict_steps', 'Not set')}")
+        print(f"  sampling_temperature: {getattr(self, 'sampling_temperature', 1.0)}")
+        print(''.join(['=']*16))
 
     def predict_step(self, batch, batch_idx):
         latent = self.encdec_model.encode(batch)

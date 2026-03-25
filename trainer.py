@@ -17,6 +17,8 @@ from utils_sd import *
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
 sys.path.append(os.path.dirname(os.getcwd() + '/propagators/'))
 
+from embeddings.resolver import get_encdec
+
 
 ##################################
 # Arguments
@@ -81,15 +83,6 @@ elif config['propagator_name'] == "BGE_TFT_V2":
     from propagators.bge_tft_v2 import BondGraphEncoderTFT as dyn_surrogate
 else:
     raise ValueError("Unknown propagator type: " + config['propagator_name'])
-
-if config['propagator_name'] == "TFT":
-    encdec_name = config.get('encdec_name', None)
-    if encdec_name == None:
-        raise ValueError("Encoder name must be specified for TFT propagator")
-    if encdec_name == "BGE":
-        from collective_encoder.nets.bge import BondGraphNetEncoderDecoder as EncDecModel
-    else:
-        raise ValueError("Unknown encoder type: " + encdec_name)
 
 if config['dynamics_name'] == 'XTC_graph':
     from dataloaders.sequence import SequenceDatamodule as main_dl
@@ -206,10 +199,12 @@ prop_args = {}
 trainer_args = {}
 
 if config['propagator_name'] == "TFT":
+    encdec_name = config.get('encdec_name', None)
     encdec_ckpt = config.get('encdec_ckpt', None)
-    if encdec_ckpt is None:
-        raise ValueError("Encoder-decoder checkpoint path must be specified for TFT propagator")
-    encdec = EncDecModel.load_from_checkpoint(encdec_ckpt, datamodule=data_set)
+    if any(x is None for x in [encdec_name, encdec_ckpt]):
+        raise ValueError("Encoder name and checkpoint must be specified for TFT propagator")
+    encdec_cls = get_encdec(encdec_name)
+    encdec = encdec_cls.load_from_checkpoint(encdec_ckpt, datamodule=data_set)
     prop_args['encdec_model'] = encdec
 elif config['propagator_name'] in ["BGE_TFT", "BGE_TFT_V2"]:
     prop_args['datamodule'] = data_set

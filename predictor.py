@@ -115,7 +115,7 @@ assert os.path.isfile(config['propagator_ckpt']), "Propagator model path does no
 ##################################
 datamod_args = config['data_args'].copy()
 # Peek in the model to get the required input length
-hpr = torch.load(config['propagator_ckpt'], map_location='cpu')['hyper_parameters']
+hpr = torch.load(config['propagator_ckpt'], map_location='cpu', weights_only=False)['hyper_parameters']
 input_chunk_length = hpr['propagator_args']['input_chunk_length']
 output_chunk_length = hpr['propagator_args']['output_chunk_length']
 predict_steps = datamod_args.pop('predict_steps', None)
@@ -128,28 +128,27 @@ if config.get('plot_decoded', False):
 else:
     datamod_args['train_size'] = input_chunk_length
 datamod_args['batch_size'] = datamod_args['train_size']
+datamod_args['sequential'] = True
 datamod = DataModule(**datamod_args)
 
 ##################################
 # Loding trained propagator model
 ##################################
-print(f"\n\n[Loading propagator model {PropagatorModel.__name__}]")
-print("========================================")
+print("Loading propagator model from: ", config['propagator_ckpt'])
 try:
     prop = PropagatorModel.load_from_checkpoint(config['propagator_ckpt'], datamodule=datamod)
 except Exception as e:
     raise RuntimeError(f"Error loading the propagator model from checkpoint \n"
                        "Check if the model architecture matches the checkpoint.")
-print("Loaded propagator model from: ", config['propagator_ckpt'])
-print("Model details:")
-for name, param in prop.hparams.items():
-    if isinstance(param, dict):
-        print(f"{name}:")
-        for k, v in param.items():
-            print(f"    {k}: {v}")
-    else:
-        print(f"{name}: {param}")
-print("=========================================\n\n")
+# print("Model details:")
+# for name, param in prop.hparams.items():
+#     if isinstance(param, dict):
+#         print(f"{name}:")
+#         for k, v in param.items():
+#             print(f"    {k}: {v}")
+#     else:
+#         print(f"{name}: {param}")
+# print("=========================================\n\n")
 
 
 

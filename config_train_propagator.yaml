@@ -1,7 +1,7 @@
 debug: False
 outpath: ./train_runs/tft/cg/gaussian_regression
 outfolder: run
-overwrite: True
+overwrite: False
 nexp: 1
 output_to_file: True
 
@@ -45,14 +45,14 @@ data_args:
     tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
     selection: "(resname ALA or resname ACE or resname NME) and not element H"
     datareader_type: "XTC_CHUNKS_CG"
-    cg_window: 32
-    train_size : 20
+    cg_window: 4
+    train_size : 80
     batch_size : 2
-    validation_size : 4
+    validation_size : 16
     val_batch_size : 2
     dataset_type : "GRAPH"
     num_workers : 1
-    n_seq_per_sample : 32
+    n_seq_per_sample : 128
     norm_type : "minmax"
 
 propagator_name: TFT
