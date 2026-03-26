@@ -1,3 +1,3 @@
 [submodule "collective_encoder"]
 	path = collective_encoder
-	url = git@git.nano.cit.tum.de:ge45daw/collective_encoder.git
+	url = git@github.com:goharalisiddiqui/collective-encoder.git
