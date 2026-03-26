@@ -10,6 +10,7 @@ else
     else
         source .venv/bin/activate
     fi
+fi
 ########################################
 
 

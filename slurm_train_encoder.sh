@@ -14,7 +14,7 @@
 source slurm_header.sh
 
 if [ "$debug" == 1 ]; then
-    $pref python collective_encoder/engine.py --config config_train_encoder.yaml --debug
+    $pref python collective_encoder/engine.py --config configs/config_train_encoder.yaml --debug
 else
-    $pref python collective_encoder/engine.py --config config_train_encoder.yaml
+    $pref python collective_encoder/engine.py --config configs/config_train_encoder.yaml
 fi

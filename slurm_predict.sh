@@ -14,7 +14,7 @@
 source slurm_header.sh
 
 if [ "$debug" == 1 ]; then
-    $pref python predictor.py --config config_predict.yaml --debug
+    $pref python predictor.py --config configs/config_predict.yaml --debug
 else
-    $pref python predictor.py --config config_predict.yaml
+    $pref python predictor.py --config configs/config_predict.yaml
 fi

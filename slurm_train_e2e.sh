@@ -14,7 +14,7 @@
 source slurm_header.sh
 
 if [ "$debug" == 1 ]; then
-    $pref python trainer.py --config config_train_e2e.yaml --debug
+    $pref python trainer.py --config configs/config_train_e2e.yaml --debug
 else
-    $pref python trainer.py --config config_train_e2e.yaml
+    $pref python trainer.py --config configs/config_train_e2e.yaml
 fi
