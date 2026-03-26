@@ -1,0 +1,50 @@
+title                   = Alanine in water
+; define                  = -DPOSRES  ; position restrain the protein
+; Run parameters
+integrator              = md        ; leap-frog integrator
+nsteps                  = 50000000  ; 100 ns (500000 = 1 ns)
+dt                      = 0.002     ; 2 fs
+init-step               = 0         ; Reset the step number
+continuation            = yes       ;
+; Output control
+nstxout-compressed      = 50         ; save xtc coordinates (every 100 fs)
+; nstxout                 = 1000     ; save coordinates
+; nstvout                 = 1000     ; save velocities
+nstenergy               = 1000       ; save energies every 1.0 ps
+nstlog                  = 1000       ; update log file every 1.0 ps
+nstcomm                 = 500        ; frequency of removal of com motion
+nstcalcenergy           = 500
+; Bond parameters
+constraint_algorithm    = lincs     ; holonomic constraints
+constraints             = h-bonds   ; bonds involving H are constrained
+lincs_iter              = 2         ; accuracy of LINCS
+lincs_order             = 4         ; also related to accuracy
+; Nonbonded settings
+cutoff-scheme           = Verlet    ; Buffered neighbor searching
+ns_type                 = grid      ; search neighboring grid cells
+nstlist                 = 10        ; 20 fs, largely irrelevant with Verlet
+rcoulomb                = 1.0       ; short-range electrostatic cutoff (in nm)
+rvdw                    = 1.0       ; short-range van der Waals cutoff (in nm)
+DispCorr                = EnerPres  ; account for cut-off vdW scheme
+verlet-buffer-tolerance = 0.0001    ; kj/mol/ps might need to put -1.
+vdwtype                 = cut-off   ; PME or User to look for table /user
+; Removal of center of mass motion
+comm-mode                = linear    ; linear, angular (removes linear and angular motion) or none
+; Electrostatics
+coulombtype             = PME       ; Particle Mesh Ewald for long-range electrostatics
+pme_order               = 4         ; cubic interpolation
+fourierspacing          = 0.16      ; grid spacing for FFT
+ewald-rtol              = 1.e-5     ; splitting between real and reciprocal
+ewald-geometry          = 3d        ; 3d or 3dc
+; Temperature coupling is on
+nsttcouple              = 10
+tcoupl                  = V-rescale    ; modified Berendsen thermostat
+tc-grps                 = System      ; two coupling groups - more accurate
+tau_t                   = 0.1          ; time constant, in ps
+ref_t                   = 300          ; reference temperature, one for each group, in K
+; Pressure coupling is on
+pcoupl                  = no        ; no pressure coupling in NVT
+; Periodic boundary conditions
+pbc                     = xyz       ; 3-D PBC
+; Velocity generation
+gen_vel                 = no       ; no velocity generation

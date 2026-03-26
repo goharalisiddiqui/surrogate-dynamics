@@ -1,1 +1,11 @@
-ala2_*
+*
+
+!solvated
+!solvated/run_template
+!solvated/multitemp.sh
+!solvated/run_template/**/*
+
+!isolated
+!isolated/run_template
+!isolated/multitemp.sh
+!isolated/run_template/**/*
