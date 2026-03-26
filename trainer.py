@@ -13,7 +13,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.lr_monitor import LearningRateMonitor
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 
-from utils_sd import *
+from projectutils import *
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
 sys.path.append(os.path.dirname(os.getcwd() + '/propagators/'))
 

@@ -3,7 +3,7 @@ import sys
 import argparse
 import yaml
 
-from utils_sd import *
+from projectutils import *
 
 import pytorch_lightning as pl
 sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
