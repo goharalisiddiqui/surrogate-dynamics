@@ -1,0 +1,15 @@
+debug: False
+outfolder: run
+overwrite: False
+nexp: 1
+output_to_file: False
+save_checkpoint: False
+save_serial_model: False
+
+datamodule_args:
+  sequential: true
+
+inference_args:
+    predict_steps: 100
+    sampling_temperature: 1.0
+    fixed_sigma: False

@@ -1,65 +1,126 @@
-import os
-import math
-import argparse
-from typing import Callable, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
+from tqdm import tqdm
 
 import numpy as np
 
-from ase.data import covalent_radii
-
 import torch
-from torch import nn, Tensor
+from torch import nn, var
 import torch.nn.functional as F
 
-from torch_geometric.data import Dataset
-from torch_geometric.nn import MessagePassing, Set2Set
-from torch_geometric.utils import softmax
-
-import pytorch_lightning as pl
-from tqdm import tqdm
-
-from collective_encoder.common.module import CEModule
-from likelihoods.resolver import LikelihoodResolver
+from collective_encoder.collective_encoder import trainer
+from collective_encoder.nets.base import CENetBase
+from likelihoods.resolver import likelihood_resolver
 from propagators.tft_model.tft import ModifiedTFTModel as TFTModel
 
-class PropagatorTFT(pl.LightningModule, CEModule):
+from embeddings.resolver import get_encdec
+
+_DEFAULT_OUTPUTS = {
+    'bond_dist': 'y_bonds', 
+    'angle': 'y_angles', 
+    'dihedral_cos': 'y_torsions_cos', 
+    'dihedral_sin': 'y_torsions_sin',
+}
+
+class PropagatorTFT(CENetBase):
+    _IDENTFIER = "PropagatorTFT"
+    _REQUIRED_ARGS = ['input_chunk_length', 'output_chunk_length']
+    _OPTIONAL_ARGS = CENetBase._OPTIONAL_ARGS.copy()
+    _OPTIONAL_ARGS.update({
+        'hidden_dim': 64,
+        'lstm_layers': 1,
+        'num_attention_heads': 4,
+        'dropout': 0.1,
+        'retain_lstm_cell_state': False,
+        'likelihood': None,
+        'likelihood_args': None,
+        'loss_fn': nn.MSELoss(),
+        'loss_e2e_weight': 1.0,
+        'loss_encdec_weights': [1.0, 1.0, 1.0, 1.0],
+        'out_labels': _DEFAULT_OUTPUTS.copy(),
+        'inference_settings': None,
+        'encdec_type': None,
+        'encdec_ckpt': None,
+    })
+
     def __init__(
         self,
-        encdec_model: nn.Module,
-        propagator_args: Dict[str, Union[int, float]],
-        likelihood: str = 'QuantileRegression',
-        likelihood_args: Optional[Dict] = None,
-        lr: Optional[float] = 1e-4,                                   ### OPTIMIZER ARGS
-        weight_decay: Optional[float] = 0.0,
-        normIn: Optional[bool] = False,
-        scheduler: Optional[bool] = False,
-        scheduler_args: Optional[Dict] = None,
-        out_labels: Optional[List[str]] = ['bond_dist', 'angle', 'dihedral_cos', 'dihedral_sin'],
-        outname: Optional[str] = './TFT_untitled/TFT_',
+        datamodule,
+        args = None,
+        **kwargs
     ):
-        self.save_hyperparameters()
-        super().__init__()
+        self.save_hyperparameters(ignore=['datamodule'])
+        super().__init__(args, **kwargs)
 
-        self.encdec_model = encdec_model
-        self.encdec_model.eval()
-        for param in self.encdec_model.parameters():
-            param.requires_grad = False  # Freeze encoder-decoder
-        self.latent_dim = encdec_model.latent_dim if encdec_model is not None else None
         self.sequence_length = (
-            propagator_args['input_chunk_length'] + 
-            propagator_args['output_chunk_length']
+            self.input_chunk_length + 
+            self.output_chunk_length
         )
-        self.likelihood = LikelihoodResolver(likelihood, likelihood_args or {})
+
+        if self.likelihood is not None:
+            self.likelihood = likelihood_resolver(self.likelihood, 
+                                                self.likelihood_args or {})
         
-        # Initialize propagator
+        if self.inference_settings is None:
+             self.inference_settings = {}
+        self.inference_settings.setdefault('sampling_temperature', 1.0)
+        self.inference_settings.setdefault('fixed_sigma', False)
+        
+        if self.encdec_type is None:
+            self._encoder_mode = False
+            datapoint_shape = datamodule.get_datapoint_shape()
+            if not isinstance(datapoint_shape, (tuple, list)):
+                self.raise_error(f"Expected datamodule.get_datapoint_shape() "
+                                 f"to return a tuple or list, got {type(datapoint_shape)} "
+                                 f"this suggest a mismatch between the datamodule and the propagator."
+                                )
+            self.latent_dim = datamodule.get_datapoint_shape()[-1]
+            self.log_msg("No encoder-decoder model provided. "
+                         "Propagator will expect latent inputs directly.")
+        else:
+            self._encoder_mode = True
+            if self.normIn:
+                self.raise_error("Normalization not supported when encoder-decoder model is used. "
+                                 "Please set normIn to False.")
+            encdec_type = self.encdec_type
+            encdec_ckpt = self.encdec_ckpt
+            if any(x is None for x in [encdec_type, encdec_ckpt]):
+                self.raise_error("Encoder type and checkpoint must be specified for TFT propagator")
+            encdec_cls = get_encdec(encdec_type)
+            encdec = encdec_cls.load_from_checkpoint(encdec_ckpt, 
+                                    datamodule=datamodule)
+            self.encdec_model = encdec
+            self.encdec_model.eval()
+            for param in self.encdec_model.parameters():
+                param.requires_grad = False
+            self.latent_dim = self.encdec_model.latent_dim
+        self._init_propagator()
+        
+        self.losses = {
+            "loss_prop": self.loss_prop,
+        }
+        self.metrics = {
+            'mae_prop': self.metric_mae_prop
+        }
+        if self._encoder_mode and self.loss_e2e_weight > 0.0:
+            self.losses["loss_topol"] = self.loss_topol
+            self.metrics['mae_topol'] = self.metric_mae_topol
+            if len(self.loss_encdec_weights) != len(self.out_labels):
+                self.raise_error(f"loss_encdec_weights length "
+                                f"{len(self.loss_encdec_weights)} "
+                                f"must match out_labels length "
+                                f"{len(self.out_labels)}")
+            
+        self.test_metrics = self.metrics.copy()
+
+    def _init_propagator(self):
         (
             variables_meta, 
             n_static_components, 
             categorical_embedding_sizes, 
             output_dim
         ) = TFTModel.collect_meta(
-            input_chunk_length = propagator_args['input_chunk_length'],
-            output_chunk_length = propagator_args['output_chunk_length'],
+            input_chunk_length = self.input_chunk_length,
+            output_chunk_length = self.output_chunk_length,
             n_past_covariates = 0,
             n_future_covariates = 0,
             n_static_covariates = 0,
@@ -67,188 +128,260 @@ class PropagatorTFT(pl.LightningModule, CEModule):
             add_relative_index = True,
             likelihood = self.likelihood,
         )
+
         prop_keywargs = {
-            "input_chunk_length": propagator_args['input_chunk_length'],
-            "output_chunk_length": propagator_args['output_chunk_length'],
+            "input_chunk_length": self.input_chunk_length,
+            "output_chunk_length": self.output_chunk_length,
             "output_dim": output_dim,
             "variables_meta": variables_meta,
             "num_static_components": n_static_components,
-            "hidden_size": propagator_args['hidden_dim'],
-            "lstm_layers": propagator_args['lstm_layers'],
-            "dropout": propagator_args['dropout'],
-            "num_attention_heads": propagator_args['num_attention_heads'],
+            "hidden_size": self.hidden_dim,
+            "lstm_layers": self.lstm_layers,
+            "dropout": self.dropout,
+            "num_attention_heads": self.num_attention_heads,
             "full_attention": False,
             "feed_forward": "GatedResidualNetwork",
             "hidden_continuous_size": 8,
             "categorical_embedding_sizes": categorical_embedding_sizes,
             "add_relative_index": True,
             "norm_type": 'LayerNorm',
+            "retain_lstm_cell_state": self.retain_lstm_cell_state,
         }
         self.propagator = TFTModel(**prop_keywargs)
-        
-        if scheduler:
-            self.scheduler_args = {
-                'factor': 0.7, 
-                'patience': 5, 
-                'min_lr': 1e-9
-            }
-            if scheduler_args is not None:
-                self.scheduler_args.update(scheduler_args)
+                
+    
+    # ------------------------------------------------------------------
+    # Normalization
+    # ------------------------------------------------------------------
 
+    def _validate_norm_sizes(self, Mean, Range):
+        if self._encoder_mode: # Ruduntant check: We already check this in the constructor.
+            self.raise_error("Normalization not supported when encoder-decoder model is used. ")
+        if Mean.size(0) != self.latent_dim:
+            raise ValueError(f"Mean size {Mean.size(0)} does not match expected {self.latent_dim}")
+        if Range.size(0) != self.latent_dim:
+            raise ValueError(f"Range size {Range.size(0)} does not match expected {self.latent_dim}")
+    
+    def get_norm_len(self) -> int:
+        return self.network[0]
+
+    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        if self.Mean.numel() != np.prod(x.shape[1:]):
+            self.raise_error(f"Mean and Range buffers must have the same number" 
+                             f" of elements as the input features. Got Mean shape:"
+                             f" {self.Mean.shape}, Range shape: {self.Range.shape},"
+                             f" input shape: {x.shape}")
+        mean_expanded = self.Mean.view(1, *(x.shape[1:])).expand(x.shape)
+        range_expanded = self.Range.view(1, *(x.shape[1:])).expand(x.shape)
+        return (x - mean_expanded) / range_expanded
+
+    def _denormalize(self, x: torch.Tensor) -> torch.Tensor:
+        if self.Mean.numel() != np.prod(x.shape[1:]):
+            self.raise_error(f"Mean and Range buffers must have the same number" 
+                             f" of elements as the input features. Got Mean shape:"
+                             f" {self.Mean.shape}, Range shape: {self.Range.shape},"
+                             f" input shape: {x.shape}")
+        mean_expanded = self.Mean.view(1, *(x.shape[1:])).expand(x.shape)
+        range_expanded = self.Range.view(1, *(x.shape[1:])).expand(x.shape)
+        return x * range_expanded + mean_expanded
+    
+    # ------------------------------------------------------------------
+    # Forward pass
+    # ------------------------------------------------------------------
+
+    def _batch_split(self, batch):
+        if self._encoder_mode:
+            return batch, self.extract_labels(batch)
+        else:
+            return super()._batch_split(batch)
+    
+    def prop_sample(self, prop_out):
+        extra_args = {}
+        if not self.training:
+            extra_args['temperature'] = self.inference_settings['sampling_temperature']
+            extra_args['fixed_sigma'] = self.inference_settings['fixed_sigma']
+            
+        if self.likelihood is not None:
+            return self.likelihood.sample(prop_out, **extra_args)
+        else:
+            prop_out = prop_out.squeeze(-1)
+            if self.training:
+                return prop_out
+            else:
+                return torch.normal(prop_out, var)
+        
     def forward(self, data):
-        with torch.no_grad():
-            pred, latent = self.encdec_model(data)
-
-        prop_latent = latent.view(-1, self.sequence_length, self.latent_dim)
-        prop_in = prop_latent[:, :self.propagator.input_chunk_length, :]
-        # TFT expects (B, T, C) inputs; returns (B, T_out, C)
-        prop_out = self.propagator((prop_in, None, None))
-
-        prop_sample = self.likelihood.sample(prop_out)
-        prop_dec = self.encdec_model.decode(prop_sample.view(-1, self.latent_dim))
-        # pred = self.denormalize(pred)
-        return pred, latent, prop_out, prop_dec
-
-    def loss_prop(self, prop_out, latent, stage: str, batch_size=None):
-        prop_latent = latent.view(-1, self.sequence_length, self.latent_dim)
-        prop_target = prop_latent[:, -self.propagator.output_chunk_length:, :]
-
-        loss_prop = self.likelihood.compute_loss(prop_out, prop_target, None)
-        self.log(f"{stage}_prop_loss", loss_prop, prog_bar=(stage=="train"), 
-                 on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)
+        if self._encoder_mode:
+            with torch.no_grad():
+                latent, meta = self.encdec_model._encode(data)
+        else:
+            latent = self.normalize(latent)
         
-        with torch.no_grad():
-            mae_prop = torch.abs(self.likelihood.sample(prop_out) - prop_target).mean()
-            self.log(f"{stage}_prop_mae", mae_prop, prog_bar=(stage!="train"), on_epoch=True, batch_size=batch_size)
+        long_seq_length = self.trainer.datamodule.sequence_length
+        prop_latent = latent.view(-1, long_seq_length, self.latent_dim)
+        
+        i = 0
+        while i+self.sequence_length <= long_seq_length:
+            prop_in = prop_latent[:, i:i+self.propagator.input_chunk_length, :] # We take the input sequence always from encoded latent (Batch, T_in, Latent Dim)
+            # TFT expects (B, T, C) inputs; returns (B, T_out, C)
+            prop_out_chunk = self.propagator((prop_in, None, None)) # (Batch, T_out, Latent Dim)
+            if i == 0:
+                prop_out = prop_out_chunk
+            else:
+                prop_out = torch.cat([prop_out, prop_out_chunk], dim=1)
+            i += self.propagator.output_chunk_length
+        self.propagator.reset_cell_state()
+
+        prop_sample = self.prop_sample(prop_out.clone())
+        prop_sample = prop_sample.view(-1, self.latent_dim)
+        
+        if self._encoder_mode:
+            meta['prop_dec'] = self.encdec_model._decode(prop_sample)
+            prop_sample = self.denormalize(prop_sample)
+        meta['prop_out'] = prop_out
+
+        return prop_sample, latent, meta
+    
+    # ------------------------------------------------------------------
+    # Losses
+    # ------------------------------------------------------------------
+                    
+    def loss_prop(self, inp, latent, output, labels, meta):
+        long_seq_length = self.trainer.datamodule.sequence_length
+        
+        latent = latent.view(-1, long_seq_length, self.latent_dim)
+        latent = latent[:, self.propagator.input_chunk_length:, :]
+        prop_out = meta['prop_out'].squeeze(-1)
+
+        loss_prop = self.likelihood.compute_loss(prop_out, latent, None) if \
+            self.likelihood is not None else \
+                self.loss_fn(prop_out, latent)
 
         return loss_prop
     
-    def step(self, batch, stage: str):
-        pred, latent, prop_out, prop_dec = self.forward(batch)
+    def loss_topol(self, inp, latent, output, labels, meta):
+        topol = meta['prop_dec']
 
-        batch_size = self.trainer.datamodule.hparams.batch_size if self.trainer and self.trainer.datamodule else None
+        losses = {}
+        loss_labels = self.out_labels.keys()
+        for out_label, weight in zip(loss_labels, self.loss_encdec_weights):
+            losses[out_label] = self.loss_fn(topol[out_label], labels[out_label]) * weight
+
+        return sum(losses.values()), losses
+
+    def metric_mae_prop(self, inp, latent, output, labels, meta) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        long_seq_length = self.trainer.datamodule.sequence_length
         
-        # Propagation loss in latent space
-        loss_prop = self.loss_prop(prop_out, latent, stage, batch_size=self.sequence_length)
+        latent = latent.view(-1, long_seq_length, self.latent_dim)
+        latent = latent[:, self.propagator.input_chunk_length:, :]
+        prop_out = meta['prop_out'].squeeze(-1)
+        prop_out = self.prop_sample(prop_out.clone())
 
-        loss = loss_prop
+        mae_prop = F.l1_loss(prop_out, latent, reduction='none')
+        mae_prop = mae_prop.mean(dim=-1) # Average over latent dim
+
+        return mae_prop, {}
+
+    def metric_mae_topol(self, inp, latent, output, labels, meta) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        topol = meta['prop_dec']
+
+        losses = {}
+        loss_labels = self.out_labels.keys()
+        for out_label in loss_labels:
+            losses[out_label] = F.l1_loss(topol[out_label], labels[out_label], reduction='none')
+        aggregated_mae = sum(losses.values()) / len(losses)
+        return aggregated_mae, losses
+
+    # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
+    
+    def set_inference_settings(self, **kwargs):
+        if 'predict_steps' in kwargs and kwargs['predict_steps'] < self.sequence_length:
+            self.raise_error(f"predict_steps must be not be less than sequence_length "
+                             f"({self.sequence_length}) to ensure we have "
+                             f"enough warmup steps. Got predict_steps={kwargs['predict_steps']}.")
         
-        self.log(f"{stage}_loss", loss, prog_bar=(stage=="train"), 
-                 on_step=(stage=="train"), on_epoch=True, batch_size=batch_size)
-
-        return loss
-
+        if 'fixed_sigma' in kwargs and kwargs['fixed_sigma'] == False and self.likelihood is None:
+            self.raise_error("fixed_sigma cannot be False if no likelihood is used.")
+    
+        self.inference_settings.update(kwargs)
+            
+    def on_predict_start(self):
+        self.ce_log_dict("Inference settings", self.inference_settings)
+        if 'predict_steps' not in self.inference_settings:
+            self.raise_error("predict_steps must be specified in "
+                             "inference_settings before starting prediction.")
+    
     def propagate(self, warmup, predict_steps):
         # TFT expects (B, T_in, C) inputs; returns (B, T_out, C)
         prop_out = self.propagator((warmup, None, None))
-        prop_out = self.likelihood.sample(prop_out)
+        prop_out = self.prop_sample(prop_out)
         prop_out = torch.cat([warmup, prop_out], dim=1)  # (B, T = T_in + T_out, C)
 
         pbar = tqdm(total=predict_steps, leave=False, desc="Autoregressive Propagation", ncols=80)
         while prop_out.size(1) < predict_steps:
             inp = prop_out[:, -self.propagator.input_chunk_length:, :]
             prop_extra = self.propagator((inp, None, None))
-            prop_extra = self.likelihood.sample(prop_extra, temperature=self.sampling_temperature)
-            if False: # Add gaussian noise proportional to input variance
-                inp_var = torch.var(inp, dim=(1))
-                noise = torch.randn_like(prop_extra) * torch.sqrt(inp_var + 1e-6)
-                prop_extra = prop_extra + noise
+            prop_extra = self.prop_sample(prop_extra)
             prop_out = torch.cat([prop_out, prop_extra], dim=1)
             pbar.update(prop_extra.size(1))
         pbar.close()
         prop_out = prop_out[:, :predict_steps, :].contiguous().squeeze(0)  # (T, C)
         
         return prop_out
-    
-    def set_predict_settings(self, **kwargs):
-        steps = kwargs.get('predict_steps', None)
-        temperature = kwargs.get('sampling_temperature', 1.0)
-        
-        assert steps >= self.sequence_length, f"predict_steps must be at least {self.sequence_length}"
-        self.predict_steps = steps
-        self.sampling_temperature = temperature
-
-    def on_predict_start(self):
-        print('\n')
-        print(''.join(['=']*16))
-        print(f"Prediction settings:")
-        print(f"  predict_steps: {getattr(self, 'predict_steps', 'Not set')}")
-        print(f"  sampling_temperature: {getattr(self, 'sampling_temperature', 1.0)}")
-        print(''.join(['=']*16))
 
     def predict_step(self, batch, batch_idx):
-        latent = self.encdec_model.encode(batch)
-
-        if hasattr(self, 'predict_steps'):
-            predict_steps = self.predict_steps
+        data, labels = self._batch_split(batch)
+        if self._encoder_mode:
+            with torch.no_grad():
+                latent, meta = self.encdec_model._encode(data)
         else:
-            predict_steps = latent.size(0)
+            latent = self.normalize(latent)
 
-        if predict_steps < self.hparams.propagator_args['input_chunk_length']:
-            raise ValueError(f"Not enough input steps for prediction: have {predict_steps}, "
-                             f"need at least {self.hparams.propagator_args['input_chunk_length']}")
-        warmup = latent[:self.hparams.propagator_args['input_chunk_length'], :].view(1, self.hparams.propagator_args['input_chunk_length'], self.latent_dim)
-
+        predict_steps = self.inference_settings['predict_steps']
+        warmup = latent[:self.input_chunk_length, :].unsqueeze(0) # (1, T_in, Latent Dim)
         prop_out = self.propagate(warmup, predict_steps=predict_steps)
 
-        if predict_steps > 1000:
-            # To save memory, only decode 1000 graphs at a time
-            gnn_out = {}
-            for i in range(0, predict_steps, 1000):
-                chunk = prop_out[i:i+1000, :].contiguous()
-                chunk_out = self.encdec_model.decode(chunk)
-                for k, v in chunk_out.items():
-                    if k not in gnn_out:
-                        gnn_out[k] = []
-                    gnn_out[k].append(v)
-            for k in gnn_out:
-                gnn_out[k] = torch.cat(gnn_out[k], dim=0)
-        else:
-            gnn_out = self.encdec_model.decode(prop_out)
+        if not self._encoder_mode:
+            return self.denormalize(prop_out)
 
-        pred = { "Predicted":{
-            'bond_dist': gnn_out['bond_dist'],
-            'angle': gnn_out['angle'],
-            'dihedral_cos': gnn_out['dihedral_cos'],
-            'dihedral_sin': gnn_out['dihedral_sin'],
-        },}
+        # if predict_steps > 1000:
+        #     # To save memory, only decode 1000 graphs at a time
+        #     gnn_out = {}
+        #     for i in range(0, predict_steps, 1000):
+        #         chunk = prop_out[i:i+1000, :].contiguous()
+        #         chunk_out = self.encdec_model.decode(chunk)
+        #         for k, v in chunk_out.items():
+        #             if k not in gnn_out:
+        #                 gnn_out[k] = []
+        #             gnn_out[k].append(v)
+        #     for k in gnn_out:
+        #         gnn_out[k] = torch.cat(gnn_out[k], dim=0)
+        # else:
 
-        if latent.size(0) == pred['Predicted']['bond_dist'].size(0): # Only when we get more than warmup steps
-            pred['True'] = {
-                'bond_dist': batch.y_bonds.view(predict_steps, -1),
-                'angle': batch.y_angles.view(predict_steps, -1),
-                'dihedral_cos': batch.y_torsions_cos.view(predict_steps, -1),
-                'dihedral_sin': batch.y_torsions_sin.view(predict_steps, -1),
-            }
-            latent_dec = self.encdec_model.decode(latent)
-            pred['Decoded'] = {
-                'bond_dist': latent_dec['bond_dist'],
-                'angle': latent_dec['angle'],
-                'dihedral_cos': latent_dec['dihedral_cos'],
-                'dihedral_sin': latent_dec['dihedral_sin'],
-            }
+        gnn_out = self.encdec_model.decode(prop_out)
+        pred = { "Predicted": gnn_out }
+
+        if latent.size(0) == gnn_out['bond_dist'].size(0): # If the number of predicted graphs matches the number of input graphs, we can also include the true labels in the output for comparison.
+            pred['True'] = labels
+            pred['Decoded'] = self.encdec_model._decode(latent)
 
         return pred
-
-    def training_step(self, batch, batch_idx):
-        return self.step(batch, "train")
-
-    def validation_step(self, batch, batch_idx):
-        self.step(batch, "val")
-
-    def test_step(self, batch, batch_idx):
-        self.step(batch, "test")
-
-    def configure_optimizers(self):
-        opt = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        if self.hparams.scheduler:
-            sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 
-                                                            mode='min', 
-                                                           factor=self.scheduler_args['factor'], 
-                                                           patience=self.scheduler_args['patience'], 
-                                                           min_lr=self.scheduler_args['min_lr'])
-            return {"optimizer": opt, "lr_scheduler": sched, "monitor": "val_loss"}
-        return opt
-
-__all__ = ["BondGraphEncoderTFT"]
-
+    
+    # ------------------------------------------------------------------
+    # Utility functions
+    # ------------------------------------------------------------------
+    
+    def extract_labels(self, batch):
+        """extract target labels from a batch.
+        """
+        num_graphs = batch.batch.max().item() + 1
+        
+        labels = {}
+        for out_label, batch_attr in self.out_labels.items():
+            if not hasattr(batch, batch_attr):
+                self.raise_error(f"Batch is missing expected attribute "
+                                 f"'{batch_attr}' for output label '{out_label}'")
+            labels[out_label] = getattr(batch, batch_attr).view(num_graphs, -1)
+        return labels

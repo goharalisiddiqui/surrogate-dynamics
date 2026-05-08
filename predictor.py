@@ -1,26 +1,48 @@
+import logging
+from pyexpat import model
+_log = logging.getLogger(__name__)
+
 import os
-import sys
-import argparse
 import yaml
+import argparse
+import warnings
 
-from projectutils import *
+import numpy as np
 
+import torch
 import pytorch_lightning as pl
-sys.path.append(os.path.dirname(os.getcwd() + '/collective_encoder/'))
-sys.path.append(os.path.dirname(os.getcwd() + '/propagators/'))
+
+from gslibs.utils.common import recursive_update
+from gslibs.utils.common import get_required_init_args
+from gslibs.utils.filesystem import create_rundir, output_to_file
+
+from collective_encoder.utils import check_dict_contains_keys
+from propagators.resolver import get_propagator
+from collective_encoder.common.config_check import (
+    validate_duplicate_keys, 
+    validate_required_fields 
+)
+from collective_encoder.dataanalysers.resolver import get_dataanalyser
+
+from datamodules.resolver import get_datamodule
+
+warnings.filterwarnings("ignore", ".*does not have many workers.*")
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'configs', 'predictor', 'defaults.yaml')
+DEBUG_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'configs', 'predictor', 'debug.yaml')
+OVERRIDABLE_DMOD_ARGS = ['batch_size', 'val_batch_size', 'num_workers']
+torch.set_default_dtype(torch.float64)
 
 
 ##################################
 # Arguments
 ##################################
-
 def parse_args():
     desc = "Surrogate model to predict dynamics of molecular systems as time series data"
     parser = argparse.ArgumentParser(description=desc)
 
     # Run Settings
     parser.add_argument('--config', required=True, type=str,
-                        help='Config file for prediction')
+                        help='')
     parser.add_argument('--debug', action='store_true',
                         help='Run in debug mode with small data and epochs')
     
@@ -28,144 +50,160 @@ def parse_args():
 
     return args
 
+def predict(config_path: str, debug: bool = False):
+    """Predict a dynamics using a surrogate model."""
+    if not os.path.isfile(config_path):
+        raise FileNotFoundError(f"Config file not found at {config_path}")
+    validate_duplicate_keys(config_path)
+    config = yaml.safe_load(open(DEFAULT_CONFIG_PATH, 'r'))
+    recursive_update(config, yaml.safe_load(open(config_path, 'r')))
+    if debug or config.get('debug', False):
+        # Load debug config and override values
+        recursive_update(config, yaml.safe_load(open(DEBUG_CONFIG_PATH, 'r')))
+        torch.manual_seed(0)
+        np.random.seed(0)
+        print("Running in debug mode.")
+    check_dict_contains_keys(config, required_keys=[
+        'outfolder', 'nexp', 'overwrite', 'output_to_file', 'inference_plotter_type',
+        'propagator_train_path', 'propagator_type'
+    ])
+    config['outpath'] = config.get('outpath', 
+                            os.path.join(config['propagator_train_path'], 'predict_runs'))
+    if not os.path.isdir(config['propagator_train_path']):
+        raise FileNotFoundError(f"Network training directory not found at {config['propagator_train_path']}")
 
-args = parse_args()
+    ##################################
+    # Output directory
+    ##################################
+    run_dir = create_rundir(config['outpath'], 
+                        config['outfolder'], 
+                        config['nexp'], 
+                        overwrite=config['overwrite'])
 
-assert os.path.isfile(args.config), "Config file not found!"
-config = yaml.safe_load(open(args.config, 'r'))
-if args.debug:
-    config['debug'] = True
+    ##################################
+    # Output to file
+    ##################################
+    if config['output_to_file']:
+        output_to_file(run_dir, filename="out.txt")
+    
+    ##################################
+    # Meta args used in all modules
+    ##################################
+    logging.basicConfig(filename=os.path.join(run_dir, "run.log"),
+                        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                        level=logging.INFO)
+    metargs = {
+        'verbose': config.get('verbose', True),
+        'root_logger_name': __name__,
+        'run_dir': run_dir,
+    }
 
-if config['debug']:
-    config['nexp'] = 0
-    config['outpath'] = "predict_runs"
-    config['outfolder'] = "debug"
-    config['overwrite'] = True
-    config['nolog'] = True
-    config['output_to_file'] = True
+    ##################################
+    # Creating Dataset
+    ##################################
+    if 'load_datamodule' in config:
+        check_dict_contains_keys(config, required_keys=['load_datamodule'])
+        dmod_path = config['load_datamodule']
+        _log.info("Loading datamodule from: " + dmod_path)
+        dmod_ckpt = os.path.join(dmod_path, "datamodule.pth")
+        
+        # torch.serialization.add_safe_globals(torch.serialization.get_unsafe_globals_in_checkpoint(dmod_ckpt)) # !!! Very Unsafe, only do this if you trust the source of the checkpoint !!!
+        dm = torch.load(dmod_ckpt, weights_only=False)
+        dm_args = dm.get_args()
+        dm_override_args = config.get('datamodule_args', {})
+        for key, value in dm_override_args.items():
+            if key not in OVERRIDABLE_DMOD_ARGS:
+                raise ValueError(f"Cannot override datamodule argument '{key}'. "
+                                 f"Allowed keys: {OVERRIDABLE_DMOD_ARGS}")
+            _log.info(f"Overriding datamodule argument '{key}' with "
+                      f"value: {value}, previous value: {getattr(dm, key, 'N/A')}")
+            dm_args[key] = value
+            setattr(dm, key, value)
+    else:
+        check_dict_contains_keys(config, required_keys=[
+            'datamodule_type', 'datamodule_args'
+        ])
+        dm_type = config['datamodule_type']
+        dm_args = config['datamodule_args']
+        dm_cls = get_datamodule(dm_type)
+        dm_args['train_size'] = 0
+        dm_args['batch_size'] = 0
+        dm_args['predict_size'] = config['inference_args']['predict_steps']
+        dm_args['max_frames'] = config['inference_args']['predict_steps']
+        dm_args['sequential'] = True
+        validate_required_fields(dm_args, get_required_init_args(dm_cls))
+        dm = dm_cls(dm_args, **metargs)
+        
+    ##################################
+    # Data analysis and visualization
+    ##################################
+    da = config.get('data_analyser_type', None)
+    if da != None:
+        analyser_cls = get_dataanalyser(da)    
+        da_args = config.get('data_analyser_args', {})
+        da_args['datamodule_args'] = dm_args
+        da_args['output_dir'] = run_dir + "/data_analysis"
+        analyser = analyser_cls(da_args,**metargs)
+        analyser.write_data(dm.get_predict_dataset(), label="predict")
 
-    config['data_args']['predict_steps'] = 100
-    print("Running in debug mode")
-
-##################################
-# Importing Lightning Modules
-##################################
-if config['propagator_name'] == "TFT":
-    from propagators.tft import PropagatorTFT as PropagatorModel
-elif config['propagator_name'] == "BGE_TFT":
-    from propagators.bge_tft import BondGraphEncoderTFT as PropagatorModel
-else:
-    raise ValueError("Unknown propagator type")
-
-if config['dynamics_name'] == 'XTC_latent':
-    from dataloaders.xtc_latent import XtcTrainer as DataModule
-elif config['dynamics_name'] == 'XTC_graph':
-    from collective_encoder.dataloaders.default import DefaultDatamodule as DataModule
-else:
-    raise ValueError("Unknown data type")
-
-if config['writer_name'] == 'ala2':
-    from plotters.ala2 import Ala2Writer as PredictionWriter
-else:
-    PredictionWriter = None
-
-##################################
-# Output directory
-##################################
-odir = config['outpath'] + "/" + config['outfolder'] + "_"
-nexp = config['nexp']
-odir_name = odir+str(nexp)
-if not config['overwrite']:
-    while True:
-        odir_name = odir+str(nexp)
-        if not os.path.isdir(odir_name):
-            os.makedirs(odir_name)
+    ##################################
+    # Setting up the NN
+    ##################################
+    nn_path = config['propagator_train_path']
+    ckpt_path = os.path.join(nn_path, "checkpoints")
+    potential_ckpts = [a for a in os.listdir(ckpt_path) if a.endswith(".ckpt")]
+    if len(potential_ckpts) == 0:
+        raise FileNotFoundError(f"No checkpoint found in {ckpt_path}")
+    for name in ['best', 'saved', 'last']:
+        if name + ".ckpt" in potential_ckpts:
+            nn_ckpt = os.path.join(ckpt_path, name + ".ckpt")
             break
-        nexp = nexp + 1
-else:
-    if not os.path.isdir(odir_name):
-        os.makedirs(odir_name)
+    else:
+        _log.warning("No 'best', 'saved', or 'last' checkpoint found. "
+                        "Using the first available checkpoint.") 
+        nn_ckpt = os.path.join(ckpt_path, potential_ckpts[0])
+    _log.info("Loading network from: " + nn_ckpt)
+    
+    nn_type = config['propagator_type']
+    nn_cls = get_propagator(nn_type)
+    
+    # torch.serialization.add_safe_globals(torch.serialization.get_unsafe_globals_in_checkpoint(dmod_ckpt)) # !!! Very Unsafe, only do this if you trust the source of the checkpoint !!!
+    prop = nn_cls.load_from_checkpoint(nn_ckpt, 
+                                        datamodule=dm,
+                                        **metargs)
 
-if len(os.listdir(odir_name)) != 0:
-    import shutil
-    shutil.rmtree(odir_name, ignore_errors=True)
-    os.mkdir(odir_name)
-output_file_stem = odir_name+"/"+config['propagator_name']+"_"
+    prop.set_predict_settings(
+        predict_steps=config['datamodule_args']['predict_steps'],
+        sampling_temperature=config.get('sampling_temperature', 1.0),
+        fixed_sigma=config.get('fixed_sigma', False)
+    )
+
+    ##################################
+    # Prediction
+    ##################################
+    pred_writer = PredictionWriter(output_dir=run_dir, 
+                                write_interval="epoch", 
+                                config=config.get('inference_plotter_args', {}))
+    predictor_args = {}
+    predictor_args['default_root_dir'] = run_dir
+    predictor_args['accelerator'] = "cpu"
+    predictor_args['devices'] = 1
+    predictor_args['callbacks'] = [pred_writer]
+
+    predictor = pl.Trainer(**predictor_args)
+
+    predictor.predict(prop, datamodule=datamod, return_predictions=False)
 
 
-##################################
-# Output to file
-##################################
-if config['output_to_file']:
-    import sys
-    import subprocess
-    print("Redirecting output to file "+odir_name+"/out.txt")
-    tee = subprocess.Popen(
-        ["tee", odir_name+"/out.txt"], stdin=subprocess.PIPE)
-    # Cause tee's stdin to get a copy of our stdin/stdout (as well as that
-    # of any child processes we spawn)
-    os.dup2(tee.stdin.fileno(), sys.stdout.fileno())
-    os.dup2(tee.stdin.fileno(), sys.stderr.fileno())
+def main():
+    """Main entry point for the collective encoder testing."""
+    args = parse_args()
+    predict(args.config, args.debug)
 
-# Check beforehand if the checkpoint file exists
-assert os.path.isfile(config['propagator_ckpt']), "Propagator model path does not exist"
-
-##################################
-# Creating Dataset
-##################################
-datamod_args = config['data_args'].copy()
-# Peek in the model to get the required input length
-hpr = torch.load(config['propagator_ckpt'], map_location='cpu', weights_only=False)['hyper_parameters']
-input_chunk_length = hpr['propagator_args']['input_chunk_length']
-output_chunk_length = hpr['propagator_args']['output_chunk_length']
-predict_steps = datamod_args.pop('predict_steps', None)
-if predict_steps is None:
-    raise ValueError("predict_steps must be specified in data_args in the config file")
-if predict_steps < input_chunk_length:
-    raise ValueError("predict_steps must be greater than or equal to input_chunk_length")
-if config.get('plot_decoded', False):
-    datamod_args['train_size'] = predict_steps
-else:
-    datamod_args['train_size'] = input_chunk_length
-datamod_args['batch_size'] = datamod_args['train_size']
-datamod_args['sequential'] = True
-datamod = DataModule(**datamod_args)
-
-##################################
-# Loding trained propagator model
-##################################
-print("Loading propagator model from: ", config['propagator_ckpt'])
-try:
-    prop = PropagatorModel.load_from_checkpoint(config['propagator_ckpt'], datamodule=datamod)
-except Exception as e:
-    raise RuntimeError(f"Error loading the propagator model from checkpoint \n"
-                       "Check if the model architecture matches the checkpoint.")
-# print("Model details:")
-# for name, param in prop.hparams.items():
-#     if isinstance(param, dict):
-#         print(f"{name}:")
-#         for k, v in param.items():
-#             print(f"    {k}: {v}")
-#     else:
-#         print(f"{name}: {param}")
-# print("=========================================\n\n")
+if __name__ == "__main__":
+    main()
 
 
 
-##################################
-# Prediction
-##################################
-pred_writer = PredictionWriter(output_dir=odir_name, write_interval="epoch", config=config.get('writer_args', {}))
-predictor_args = {}
-predictor_args['default_root_dir'] = odir_name
-predictor_args['accelerator'] = "cpu"
-predictor_args['devices'] = 1
-predictor_args['callbacks'] = [pred_writer]
 
-prop.set_predict_settings(
-    predict_steps=config['data_args']['predict_steps'],
-    sampling_temperature=config.get('sampling_temperature', 1.0)
-)
-trainer = pl.Trainer(**predictor_args)
 
-trainer.predict(prop, datamodule=datamod, return_predictions=False)

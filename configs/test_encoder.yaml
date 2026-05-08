@@ -1,0 +1,23 @@
+debug: False                   # Set to True for quick testing (2 epochs, small dataset)
+
+outfolder: test                 # Subdirectory name for this experiment
+nexp: 1                       # Experiment number (for multiple runs)
+overwrite: True                # Overwrite existing results
+output_to_file: True           # Save training logs to file
+verbose: True
+
+load_datamodule: ./dmods/encoder/ver_1
+datamodule_args:
+  test_batch_size: 2048
+
+network_type: BGE
+network_train_path: ./train_runs/encoder/bge/run_3
+
+test_plotter_type: ALA2plotter
+test_plotter_args:
+  labels_selection_map:
+    phi_2_cos: [dihedral_cos, 6]
+    phi_2_sin: [dihedral_sin, 6]
+    psi_2_cos: [dihedral_cos, 10]
+    psi_2_sin: [dihedral_sin, 10]
+    

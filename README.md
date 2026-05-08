@@ -19,7 +19,7 @@ This enables rapid inference of molecular dynamics without the computational ove
 surrogate-dynamics/
 ├── trainer.py                      # Main training orchestrator
 ├── predictor.py                    # Inference/prediction script
-├── utils_sd.py                     # Utility functions and helpers
+├── utils.py                     # Utility functions and helpers
 ├── requirements.txt                # Python dependencies
 │
 ├── config_train_*.yaml             # Training configuration files

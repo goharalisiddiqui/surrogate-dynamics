@@ -1,5 +1,7 @@
 import sys
 import os
+
+from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.abspath(os.getcwd())))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(os.getcwd())), "collective_encoder"))
 
@@ -98,7 +100,7 @@ def run_bfgs(phi, psi,
     def objective(x):
         return -kde.score_samples(x.reshape(1, -1))
     results = []
-    for _ in range(n_BFGS_runs):
+    for _ in tqdm(range(n_BFGS_runs), desc="Running BFGS optimizations"):
         x0 = np.random.uniform(-np.pi, np.pi, size=2)
         res = minimize(objective, x0, method='BFGS')
         results.append(res)
@@ -140,16 +142,31 @@ def sort_minima_by_depth(kde, min_points):
     
     return min_points
 
-def plot_fes(Xgrid, Ygrid, fes, min_points, save_path, save_fig=False):
+def plot_fes(Xgrid, Ygrid, fes, min_points, save_path = None):
+    """
+    Plot the free energy surface (FES) with color limits fixed to [0.0, 8.0]
+    and colorbar ticks from 0.0 to 8.0 with step 1.0.
+    """
     plt.close('all')
-    fig, ax = plt.subplots(1, 1, figsize=(7,5))
-    cf = ax.contourf(Xgrid, Ygrid, fes, levels=30, cmap=cm.viridis)
-    fig.colorbar(cf, ax=ax, label='Free Energy (kJ/mol)')
-    ax.scatter(min_points[:,0], min_points[:,1], 
-            facecolors='w', edgecolors='r', s=200, 
-            label='Local Minima')
+    fig, ax = plt.subplots(1, 1, figsize=(6,4.5))
+
+    vmin, vmax = 0.0, fes.max()
+    # Clip FES to plotting range so colors are bounded
+    fes_clipped = np.clip(fes, vmin, vmax)
+
+    # Use levels spanning the fixed range for consistent contour steps
+    levels = np.linspace(vmin, vmax, 30)
+    cf = ax.contourf(Xgrid, Ygrid, fes_clipped, levels=levels, cmap=cm.viridis, vmin=vmin, vmax=vmax)
+
+    ccb = fig.colorbar(cf, ax=ax, label='Free Energy (kJ/mol)')
+    ticks = np.arange(vmin, vmax + 1e-9, 1.0)  # 0.0..8.0 step 1.0
+    ccb.set_ticks(ticks)
+    ccb.set_ticklabels([f"{t:.1f}" for t in ticks])
+
+    ax.scatter(min_points[:,0], min_points[:,1], facecolors='w', edgecolors='r', s=200, label='Local Minima')
     for i, (x, y) in enumerate(min_points):
         ax.text(x, y, str(i + 1), color='black', fontsize=8, ha='center', va='center')
+
     ax.set_xlabel(r"$\Phi$")
     ax.set_ylabel(r"$\Psi$")
     ax.set_xlim([-np.pi, np.pi])
@@ -158,16 +175,14 @@ def plot_fes(Xgrid, Ygrid, fes, min_points, save_path, save_fig=False):
     ax.set_xticklabels([r'$-\pi$', r'$-\pi/2$', '0', r'$\pi/2$', r'$\pi$'])
     ax.set_yticks([-np.pi, -np.pi/2, 0, np.pi/2, np.pi])
     ax.set_yticklabels([r'$-\pi$', r'$-\pi/2$', '0', r'$\pi/2$', r'$\pi$'])
-    ax.legend(bbox_to_anchor=(1, 1.1))
+    # ax.legend(bbox_to_anchor=(1, 1.1))
 
     plt.tight_layout()
-    if save_fig:
+    if save_path is not None:
         fig.savefig(save_path, dpi=300)
 
-def calculate_mfpt(phi, psi, min_points, selected, lag_time=1):
-    selected_idx = [i-1 for i in selected]
-    print("Selected states:", min_points[selected_idx])
-    minima = min_points[selected_idx]
+def calculate_mfpt(phi, psi, min_points, lag_time=1):
+    minima = min_points
     msm_data = np.stack([phi, psi], axis=-1)
     # n_max_states = 4
     # if len(minima) > n_max_states:
@@ -180,52 +195,56 @@ def plot_mfpt_matrix(minima,
                      mfpt_matrix, 
                      transition_counts,
                      transition_matrix, 
-                     selected, 
-                     save_path,
                      lag_time = 1,
-                     save_fig=False):
+                     save_path = None):
     from matplotlib.colors import LogNorm
 
-    fig, ax = plt.subplots(1, 2, figsize=(10,5))
+    fig, ax = plt.subplots(1, 1, figsize=(6,5))
     # Plot MFPT matrix
-    ax[0].matshow(mfpt_matrix, cmap='viridis')
-    fig.colorbar(cm.ScalarMappable(cmap='viridis', 
-                                norm=plt.Normalize(vmin=mfpt_matrix.min(), vmax=mfpt_matrix.max())), 
-                                ax=ax[0], 
-                                label='MFPT')
-    ax[0].set_title(f'MFPT Matrix (lag_time={lag_time})')
-    ax[0].set_xlabel('Target State')
-    ax[0].set_ylabel('Source State')
-    ax[0].set_xticks(np.arange(len(minima)))
-    ax[0].set_yticks(np.arange(len(minima)))
-    ax[0].set_xticklabels([str(i) for i in selected])
-    ax[0].set_yticklabels([str(i) for i in selected])
-
+    ax.matshow(mfpt_matrix, cmap='viridis')
+    mfpt_min = mfpt_matrix.min()
+    # fig.colorbar(cm.ScalarMappable(cmap='viridis', 
+    #                             norm=plt.Normalize(vmin=mfpt_min if mfpt_min > 0 else 1e-9, vmax=mfpt_matrix.max())), 
+    #                             ax=ax, 
+    #                             label='MFPT (steps)')
+    # ax.set_title(f'MFPT Matrix (lag_time={lag_time})')
+    ax.set_xlabel('Target State')
+    ax.set_ylabel('Source State')
+    ax.set_xticks(np.arange(len(minima)))
+    ax.set_yticks(np.arange(len(minima)))
+    ax.set_xticklabels([str(i) for i in range(1, len(minima) + 1)])
+    ax.set_yticklabels([str(i) for i in range(1, len(minima) + 1)])
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(os.path.join(save_path, 'mfpt_matrix.png'), dpi=300)
+    plt.close()
 
     # Plot Transition counts 
-    print(transition_matrix.min(), transition_matrix.max())
-    tm_norm = LogNorm(vmin=transition_matrix.min(), vmax=transition_matrix.max())
+    fig, ax = plt.subplots(1, 1, figsize=(6,5))
+    tm_norm = LogNorm(vmin=0.00102, vmax=1.0)
     # transition_matrix = np.log1p(transition_matrix)
-    ax[1].matshow(transition_matrix, cmap='viridis', norm=tm_norm)
-    fig.colorbar(cm.ScalarMappable(cmap='viridis', 
-                                norm=tm_norm), 
-                                ax=ax[1], 
-                                label='Transition Probabilities')
-    ax[1].set_title(f'Transition Matrix (lag_time={lag_time})')
-    ax[1].set_xlabel('To State')
-    ax[1].set_ylabel('From State')
-    ax[1].set_xticks(np.arange(len(minima)))
-    ax[1].set_yticks(np.arange(len(minima)))
-    ax[1].set_xticklabels([str(i) for i in selected])
-    ax[1].set_yticklabels([str(i) for i in selected])
+    ax.matshow(transition_matrix, cmap='viridis', norm=tm_norm)
+    # cb = fig.colorbar(cm.ScalarMappable(cmap='viridis', 
+    #                             norm=tm_norm), 
+    #                             ax=ax, 
+    #                             label='Transition Probabilities')
+    # cb.set_ticks([1.0, 0.1, 0.01, 0.001])
+    # cb.set_ticklabels(['1', '0.1', '0.01', '0.001'])
+    # cb.set_label('Transition Probabilities (log scale)', fontsize=14)
+    # small colorbar
+    # ax.set_title(f'Transition Matrix (lag_time={lag_time})')
+    ax.set_xlabel('To State', fontsize=14)
+    ax.set_ylabel('From State', fontsize=14)
+    ax.set_xticks(np.arange(len(minima)))
+    ax.set_yticks(np.arange(len(minima)))
+    ax.set_xticklabels([str(i) for i in range(1, len(minima) + 1)])
+    ax.set_yticklabels([str(i) for i in range(1, len(minima) + 1)])
 
     fig.tight_layout()
 
 
     print(f"  Shape: {mfpt_matrix.shape}")
     print(f"  Lag time: {lag_time}")
-    print(f"  Transition counts:\n{transition_counts}")
-    print(f"  MFPT Matrix:\n{mfpt_matrix}")
     
-    if save_fig:
-        fig.savefig(save_path, dpi=300)
+    if save_path:
+        fig.savefig(os.path.join(save_path, 'transition_matrix.png'), dpi=300)

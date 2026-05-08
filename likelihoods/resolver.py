@@ -1,7 +1,23 @@
 import warnings
+import importlib
+
+_REGISTRY = {
+        "Gaussian": ('likelihoods.modified_gaussian', 'ModifiedGaussianLikelihood'),
+        "Laplace": ('darts.utils.likelihood_models', 'LaplaceLikelihood'),
+        "LogNormal": ('darts.utils.likelihood_models', 'LogNormalLikelihood'),
+        "Quantile": ('.modified_quantile', 'QuantileRegression'),
+}
+
+_DEFAULT_ARGS = {
+    "Gaussian": {"prior_mu": 0.0, "prior_sigma": 1.0, 
+                 "prior_strength": 0.5, "beta_nll": 0.0},
+    "Laplace": {"prior_mu": 0.0, "prior_b": 1.0, "prior_strength": 0.5},
+    "LogNormal": {"prior_mu": 0.0, "prior_sigma": 1.0, "prior_strength": 0.5},
+    "Quantile": {"quantiles": [0.1, 0.5, 0.9]},
+}
 
 
-def LikelihoodResolver(likelihood_name: str, likelihood_args: dict):
+def likelihood_resolver(likelihood_name: str, likelihood_args: dict):
     """Resolve the likelihood class based on the given name and arguments.
 
     Args:
@@ -11,37 +27,14 @@ def LikelihoodResolver(likelihood_name: str, likelihood_args: dict):
     Returns:
         An instance of the specified likelihood class.
     """
-    from darts.utils.likelihood_models \
-        import LaplaceLikelihood, LogNormalLikelihood, QuantileRegression
-        
-    from likelihoods.modified_gaussian \
-        import ModifiedGaussianLikelihood as GaussianLikelihood
-
-    likelihoods = {
-        "Gaussian": GaussianLikelihood,
-        "Laplace": LaplaceLikelihood,
-        "LogNormal": LogNormalLikelihood,
-        "Quantile": QuantileRegression,
-    }
-    defaults = {
-        "Gaussian": {"prior_mu": 0.0, "prior_sigma": 1.0, 
-                     "prior_strength": 0.5, "beta_nll": 0.0},
-        "Laplace": {"prior_mu": 0.0, "prior_b": 1.0, 
-                    "prior_strength": 0.5},
-        "LogNormal": {"prior_mu": 0.0, "prior_sigma": 1.0, 
-                      "prior_strength": 0.5},
-        "Quantile": {"quantiles": [0.1, 0.5, 0.9]},
-    }
-
-    if likelihood_name not in likelihoods:
+    if likelihood_name not in _REGISTRY:
         raise ValueError(f"Unknown likelihood: {likelihood_name}")
+    
+    module_name, class_name = _REGISTRY[likelihood_name]
+    module = importlib.import_module(module_name)
+    likelihood_class = getattr(module, class_name)
 
-    args = defaults[likelihood_name]
-    
-    for a in likelihood_args:
-        if a not in args:
-            warnings.warn(f"Unknown argument '{a}' for likelihood '{likelihood_name}' ignored.")
-            del likelihood_args[a]
-    args.update(likelihood_args)
-    
-    return likelihoods[likelihood_name](**args)
+    default_args = _DEFAULT_ARGS.get(likelihood_name, {})
+    default_args.update(likelihood_args)
+
+    return likelihood_class(**default_args)

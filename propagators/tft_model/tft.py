@@ -88,6 +88,7 @@ class ModifiedTFTModel(nn.Module):
         dropout: float,
         add_relative_index: bool,
         norm_type: Union[str, nn.Module],
+        retain_lstm_cell_state: bool = False,
     ):
         """Modified implementing of TFT architecture from `this paper <https://arxiv.org/pdf/1912.09363.pdf>`_
         The implementation is built upon Darts library's TemporalFusionTransformer
@@ -108,6 +109,7 @@ class ModifiedTFTModel(nn.Module):
         self.feed_forward = feed_forward
         self.dropout = dropout
         self.add_relative_index = add_relative_index
+        self.retain_lstm_cell_state = retain_lstm_cell_state
 
         self.input_chunk_length = input_chunk_length
         self.output_chunk_length = output_chunk_length
@@ -159,6 +161,11 @@ class ModifiedTFTModel(nn.Module):
             for name in self.reals
         }
 
+        if self.retain_lstm_cell_state:
+            self.prescalers_linear["decoder_cell_state"] = nn.Linear(
+                self.hidden_size, self.hidden_continuous_size
+            )
+
         # static (categorical and numerical) variables
         static_input_sizes = {
             name: self.input_embeddings.output_size[name]
@@ -167,6 +174,9 @@ class ModifiedTFTModel(nn.Module):
         static_input_sizes.update({
             name: self.hidden_continuous_size for name in self.numeric_static_variables
         })
+
+        if self.retain_lstm_cell_state:
+            static_input_sizes["decoder_cell_state"] = self.hidden_continuous_size
 
         self.static_covariates_vsn = _VariableSelectionNetwork(
             input_sizes=static_input_sizes,
@@ -317,10 +327,17 @@ class ModifiedTFTModel(nn.Module):
 
         self.output_layer = nn.Linear(self.hidden_size, self.n_targets * self.loss_size)
 
+        if self.retain_lstm_cell_state:
+            self._retained_cell_state = None
+
         self._attn_out_weights = None
         self._static_covariate_var = None
         self._encoder_sparse_weights = None
         self._decoder_sparse_weights = None
+
+    def reset_cell_state(self):
+        """Reset the retained decoder LSTM cell state to zeros."""
+        self._retained_cell_state = None
 
     @staticmethod
     def collect_meta(
@@ -684,7 +701,7 @@ class ModifiedTFTModel(nn.Module):
         }
 
         # Embedding and variable selection
-        if self.static_variables:
+        if self.static_variables or self.retain_lstm_cell_state:
             # categorical static covariate embeddings
             if self.categorical_static_variables:
                 static_embedding = self.input_embeddings(
@@ -705,6 +722,16 @@ class ModifiedTFTModel(nn.Module):
                 for idx, name in enumerate(self.static_variables)
                 if name in self.numeric_static_variables
             })
+            # inject retained decoder cell state as static covariate
+            if self.retain_lstm_cell_state:
+                if self._retained_cell_state is None:
+                    cell_val = torch.zeros(
+                        batch_size, self.hidden_size,
+                        device=device, dtype=x_cont_past.dtype,
+                    )
+                else:
+                    cell_val = self._retained_cell_state
+                static_embedding["decoder_cell_state"] = cell_val
             static_embedding, static_covariate_var = self.static_covariates_vsn(
                 static_embedding
             )
@@ -759,9 +786,11 @@ class ModifiedTFTModel(nn.Module):
         # print(hidden.shape, cell.shape)
         # exit()
         # run local lstm decoder
-        decoder_out, _ = self.lstm_decoder(
+        decoder_out, (_, decoder_cell) = self.lstm_decoder(
             input=embeddings_varying_decoder, hx=(hidden, cell)
         )
+        if self.retain_lstm_cell_state:
+            self._retained_cell_state = decoder_cell[-1].detach()
 
         lstm_layer = torch.cat([encoder_out, decoder_out], dim=dim_time)
         input_embeddings = torch.cat(

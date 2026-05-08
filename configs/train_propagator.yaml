@@ -1,0 +1,84 @@
+debug: False
+outpath: ./train_runs/propagator/tft/cg/gaussian_regression/no_rare_minima
+outfolder: run
+overwrite: True
+nexp: 2
+output_to_file: True
+
+# Trainer Settings
+nepochs: 2000
+weight_decay: 0.0
+wandb: False
+wandb_project: SurrogateDynamics-Propagator-CG
+wandb_entity: goharalisiddiqui-tum
+lrate: 0.001
+normIn: False
+early_stopping: True
+early_stopping_args:
+    patience: 50
+scheduler: True
+scheduler_args:
+    factor: 0.5
+    patience: 10
+    min_lr: 0.001
+
+load_datamodule: dmods/no_rare_minima/ver_1
+# dynamics_name: XTC_graph
+# data_args:
+#     datareader_type: "XTC_CHUNKS_CG"
+#     datareader_args:
+#         xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
+#         tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
+#         selection: "(resname ALA or resname ACE or resname NME) and not element H"
+#         cg_window: 4
+#     dataset_type : "GRAPH"
+#     # dataset_args:
+#     #     encoder_name: BGE
+#     #     encoder_ckpt: ./train_runs/encoder/bge/run_1/checkpoints/best.ckpt
+#     n_seq_per_sample : 512
+#     train_size : 64
+#     batch_size : 2
+#     validation_size : 8
+#     val_batch_size : 2
+#     num_workers : 1
+#     norm_type : "minmax"
+
+data_analyser_type: ALA2
+
+encoder_name: BGE
+encoder_ckpt: ./train_runs/encoder/bge/run_1/checkpoints/best.ckpt
+
+# loss_e2e_weight: 0.0
+loss_encdec_weights: [0.01, 0.01, 0.49, 0.49] # Should sum to 1.0
+
+propagator_type: TFT
+propagator_args:
+    input_chunk_length: 8
+    output_chunk_length: 1
+    hidden_dim: 128
+    lstm_layers: 4
+    num_attention_heads: 4
+    dropout: 0.0
+    retain_lstm_cell_state: False
+    encdec_type: BGE
+    encdec_ckpt: ./train_runs/encoder/bge/run_2/checkpoints/saved.ckpt
+
+    likelihood: Gaussian
+    likelihood_args:
+        prior_mu: 0.0
+        prior_sigma: 1.0
+        prior_strength: 0.0
+        beta_nll: 1.0 # Weight for NLL loss. [0,1] 0 -> MSE, 1 -> NLL, High values means high weight on low error points
+    # likelihood: LogNormal
+    # likelihood_args:
+    #     prior_mu: 0.0
+    #     prior_sigma: 1.0
+    #     prior_strength: 0.5
+    # likelihood: Laplace
+    # likelihood_args:
+    #     prior_mu: 0.0
+    #     prior_b: 3.0
+    #     prior_strength: 0.5
+    # likelihood: QuantileRegression
+    # likelihood_args:
+    #     quantiles: [0.1,0.15,0.2,0.5,0.8,0.85,0.9]

@@ -1,0 +1,35 @@
+debug: False
+outfolder: run
+overwrite: True
+nexp: 1
+output_to_file: True 
+plot_decoded: False
+
+datamodule_type: COORDINATES
+datamodule_args:
+    datareader_type: XTC
+    datareader_args:
+        xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
+        tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
+        selection: "(resname ALA or resname ACE or resname NME) and not element H"
+        parallel: False
+    dataset_type : "GRAPH"
+data_analyser_type: ALA2
+
+propagator_type: TFT
+propagator_train_path: train_runs/propagator/tft/cg/gaussian_regression/run_8
+
+inference_args:
+    predict_steps: 100
+    sampling_temperature: 0.2
+    fixed_sigma: True
+
+inference_plotter_type: ALA2
+inference_plotter_args:
+    kde_sigma: 0.2
+    kde_bin_x: 200
+    kde_bin_y: 200
+    minima_tolerance: 0.5
+    n_minima_compare: 6
+    n_BFGS_runs: 100
+#####################################################################

@@ -1,4 +1,5 @@
 import os
+import pickle
 import numpy as np
 import torch
 from pytorch_lightning.callbacks.prediction_writer import BasePredictionWriter
@@ -27,20 +28,19 @@ class Ala2Writer(BasePredictionWriter):
         super().__init__(write_interval)
         self.output_dir = output_dir
         self.rama_minima_positions = np.array([
-            [-1.4946284 , -3.01094883],
-            [ 1.20116279,  0.05799981],
-            [ 3.0375002 , -1.97747476],
-            [-1.31441039, -0.34013426],
-            [ 3.03196092, -0.66485791],
-            [ 1.02826208, -2.71076106],
-            [ 1.75571281,  2.66234648],
-            [ 1.20543751,  2.96417112],
-            [ 3.07450587, -3.01082907],
-            [ 3.03413505,  2.75833817],
-            [-1.28428108,  2.67126545],
-            [-2.69038585,  2.78350498],
-            [ 1.0292704 , -1.70034419],
-            [-2.63080522, -2.9917996 ],
+           [ -1.3144, -0.3401],
+           [ -1.2843, 2.6713],
+           [ -2.6904, 2.7835],
+           [ -1.4946, -3.0109],
+           [ -2.6308, -2.9918],
+           [ 3.0341, 2.7583],
+           [ 1.2012, 0.0580],
+           [ 3.0745, -3.0108],
+           [ 3.0320, -0.6649],
+           [ 1.0283, -2.7108],
+           [ 1.2054, 2.9642],
+           [ 3.0375, -1.9775],
+
         ])
         self.kde_sigma = config.get("kde_sigma", 0.2) # bandwidth for KDE
         self.kde_bin_x = config.get("kde_bin_x", 200)
@@ -328,13 +328,14 @@ class Ala2Writer(BasePredictionWriter):
     
     #### Energy analysis end ####
     
-    
     def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices):
         assert len(predictions) == 1, "Expecting a single batch of predictions"
         # for k, v in predictions[0].items():
         #     print(f"key: {k}, value shape: {v.shape}")
         predictions = predictions[0]  # Always expecting a single batch
         rama_data = self.extract_ramachandran(predictions)
+        with open(self.output_dir + "/rama_data.pkl", "wb") as f:
+            pickle.dump(rama_data, f)
         self.plot_ramachandran(rama_data)
         self.save_ramachandran(rama_data)
         self.output_msm_metrics(rama_data)

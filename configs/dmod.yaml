@@ -1,0 +1,33 @@
+debug: False
+output_to_file: True
+overwrite: True
+outfolder: no_rare_minima/ver
+nexp: 2
+description: "Dataset that contains no rare minima. 8-1"
+
+datamodule_type: SEQUENCE
+datamodule_args:
+    datareader_type: "XTC_CHUNKS_CG_PP"
+    datareader_args:
+        xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
+        tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
+        selection: "(resname ALA or resname ACE or resname NME) and not element H"
+        cg_window: 4
+        parallel: True
+    dataset_type : "GRAPH"
+    labeler_type : "DIHEDRAL"
+    labeler_args:
+        label_dihedrals:
+            - phi_2
+            - psi_2
+    input_chunk_length: 8
+    output_chunk_length: 1
+    n_seq_per_sample : 256
+    train_size : 256
+    batch_size : 16
+    validation_size : 32
+    val_batch_size : 8
+    num_workers : 4
+    norm_type : "minmax"
+
+data_analyser_type: ALA2

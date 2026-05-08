@@ -1,0 +1,18 @@
+# Debug configuration for collective-encoder
+# These values override the main config when --debug is set
+
+nepochs: 2
+nexp: 0
+outfolder: "debug_trainer"
+overwrite: true
+wandb: False
+output_to_file: True
+nogpu: True
+export_latent: False
+save_checkpoint: False
+save_serial_model: False
+
+inference_args:
+  predict_steps: 100
+  sampling_temperature: 1.0
+  fixed_sigma: False

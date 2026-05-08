@@ -18,7 +18,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
         decoder_args: Dict of args for BondGraphNetDecoder.
         propagator_args: Dict of args for TFTModel.
         prop_likelihood: Darts likelihood model for propagator outputs.
-        lr: Learning rate for AdamW optimizer.
+        lrate: Learning rate for AdamW optimizer.
         weight_decay: Weight decay for AdamW optimizer.
         normIn: Whether to normalize input features (using datamodule statistics).
         scheduler: Whether to use a learning rate scheduler (ReduceLROnPlateau).
@@ -35,7 +35,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
         propagator_args: Dict[str, Union[int, float]],
         likelihood: str = 'QuantileRegression',
         likelihood_args: Optional[Dict] = None,
-        lr: Optional[float] = 1e-4,                                   ### OPTIMIZER ARGS
+        lrate: Optional[float] = 1e-4,                                   ### OPTIMIZER ARGS
         weight_decay: Optional[float] = 0.0,
         normIn: Optional[bool] = False,
         scheduler: Optional[bool] = False,
@@ -54,7 +54,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
             datamodule=datamodule,
             encoder_args=encoder_args,
             decoder_args=decoder_args,
-            lr=lr,
+            lrate=lrate,
             weight_decay=weight_decay,
             normIn=normIn,
             scheduler=scheduler,
@@ -102,6 +102,7 @@ class BondGraphEncoderTFT(BondGraphNetEncoderDecoder):
             "categorical_embedding_sizes": categorical_embedding_sizes,
             "add_relative_index": True,
             "norm_type": 'LayerNorm',
+            "retain_lstm_cell_state": propagator_args.get('retain_lstm_cell_state', False),
         }
         self.propagator = TFTModel(**prop_keywargs)
 

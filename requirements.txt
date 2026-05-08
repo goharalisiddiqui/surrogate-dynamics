@@ -3,6 +3,7 @@ scipy
 pandas
 scikit-learn
 matplotlib
+rdkit
 --extra-index-url https://download.pytorch.org/whl/cu122
 torch==2.5.1
 torch-geometric
@@ -18,3 +19,4 @@ torch-cluster
 torch-scatter 
 torch-sparse 
 torch-spline-conv
+-e ./collective_encoder

@@ -1,0 +1,38 @@
+debug: False
+outpath: ./dmods
+output_to_file: True
+overwrite: True
+outfolder: encoder/ver
+nexp: 1
+description: "Dataset to train BGE encoder"
+
+datamodule_type: COORDINATES
+datamodule_args:
+    datareader_type: XTC
+    datareader_args:
+        xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
+        tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
+        selection: "(resname ALA or resname ACE or resname NME) and not element H"
+        parallel: True
+    max_frames: 100000
+    sequential: False
+
+    train_size: 45000
+    validation_size: 5000
+    batch_size: 1024
+    val_batch_size: 1024  
+    test_size: 50000      
+    test_full_dataset: False 
+
+    dataset_type: "GRAPH"
+
+    num_workers: 4       
+    norm_type: "minmax"
+
+    labeler_type: "DIHEDRAL"
+    labeler_args:
+        label_dihedrals:
+            - phi_2
+            - psi_2
+
+data_analyser_type: ALA2
