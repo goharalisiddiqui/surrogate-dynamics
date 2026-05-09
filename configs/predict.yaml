@@ -19,8 +19,8 @@ propagator_type: TFT
 propagator_train_path: train_runs/propagator/tft/cg/gaussian_regression/run_2
 
 inference_args:
-    predict_steps: 100
-    sampling_temperature: 0.2
+    predict_steps: 50000
+    sampling_temperature: 1.0
     fixed_sigma: True
 
 inference_plotter_type: ALA2
@@ -28,10 +28,10 @@ inference_plotter_args:
     kde_sigma: 0.2
     kde_bin_x: 200
     kde_bin_y: 200
-    minima_tolerance: 0.1
+    minima_tolerance: 0.15
     n_minima_compare: 6
     n_BFGS_runs: 100
-    labels_selection_map:
+    labels_selection_map: # This is to extract phi and psi from all the dihedrals. Must be read from the output of the datareader.
         phi_2_cos: [dihedral_cos, 6]
         phi_2_sin: [dihedral_sin, 6]
         psi_2_cos: [dihedral_cos, 10]

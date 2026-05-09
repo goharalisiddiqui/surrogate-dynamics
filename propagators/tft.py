@@ -380,6 +380,7 @@ class PropagatorTFT(CENetBase):
 
         gnn_out, _ = self.encdec_model._decode(prop_out)
         pred = { "Predicted": gnn_out }
+        pred['Latent'] = prop_out
 
         if latent.size(0) == gnn_out['bond_dist'].size(0): # If the number of predicted graphs matches the number of input graphs, we can also include the true labels in the output for comparison.
             pred['True'] = labels

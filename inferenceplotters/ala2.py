@@ -9,10 +9,7 @@ from tqdm import tqdm
 from collective_encoder.collective_encoder.testplotters.ala2 import ALA2plotter as ALA2TestPlotter
 from collective_encoder.utils import compute_mfpt_matrix
 
-from utils import (
-    periodic_norm_distance,
-    periodic_average
-)
+from utils import calculate_transfer_matrix
 
 from inferenceplotters.inference_utils.md_energy import plot_energies
 from inferenceplotters.inference_utils.msm import (
@@ -74,7 +71,7 @@ class Ala2Writer(ALA2TestPlotter, BasePredictionWriter):
         min_points, min_vals = build_msm(kde, 
                                         self.n_BFGS_runs, 
                                         self.minima_tolerance)
-        self.log_info(f"Number of local minima found: {len(min_points)}")
+        self.log_result(f"Number of local minima found: {len(min_points)}")
         
         # Annotate minima on the KDE plot
         ax.scatter(min_points[:,0], min_points[:,1], 
@@ -94,17 +91,17 @@ class Ala2Writer(ALA2TestPlotter, BasePredictionWriter):
                             tolerance=self.minima_tolerance)
         n_correct = len(correct_minima)
 
-        self.log_info(f"MSM Metrics:")
-        self.log_info(f"  Number of minima (model): {len(min_points)}")
-        self.log_info(f"  Number of minima (ref): {n_comp}")
-        self.log_info(f"  Distance between minima : {dists}")
-        self.log_info(f"  Number of correctly identified minima (within {self.minima_tolerance} rad): {n_correct} out of {n_comp}")
+        self.log_result(f"MSM Metrics:")
+        self.log_result(f"  Number of minima (model): {len(min_points)}")
+        self.log_result(f"  Number of minima (ref): {n_comp}")
+        self.log_result(f"  Distance between minima : {dists}")
+        self.log_result(f"  Number of correctly identified minima (within {self.minima_tolerance} rad): {n_correct} out of {n_comp}")
         if len(correct_minima) > 1:
             (transition_counts, transition_matrix, mfpt_matrix
             ) = compute_mfpt_matrix(
                 np.stack([phi, psi], axis=-1), 
                 correct_minima, 
-                lag=1.0)
+                lag=1)
             fig, ax = self.plot_matrix(transition_counts, 
                                        title="Transition Counts",
                                        tag = "Source_Target")
@@ -119,8 +116,27 @@ class Ala2Writer(ALA2TestPlotter, BasePredictionWriter):
             self.log_image(fig, "mfpt_matrix")
             
         else:
-            self.log_info("No correct minima found, skipping MFPT computation.")
+            self.log_result("No correct minima found, skipping MFPT computation.")
 
+    def output_traj_variables(self, data):
+        lag = 1  # lag time in units of trajectory frames
+        transfer_matrix = calculate_transfer_matrix(data, lag)
+        
+        # Eigendecomposition — eigenvalues may be complex; take real parts for sorting
+        eigenvalues, eigenvectors = np.linalg.eig(transfer_matrix)
+
+        # Sort descending by magnitude (slowest modes first)
+        order = np.argsort(np.abs(eigenvalues))[::-1]
+        eigenvalues  = eigenvalues[order]
+        eigenvectors = eigenvectors[:, order]
+
+        # Implied timescales in units of trajectory frames (skip stationary mode at index 0)
+        its = -lag / np.log(np.abs(eigenvalues[1:]))
+    
+        self.log_result(eigenvalues, "Eigenvalues")
+        self.log_result(eigenvectors, "Eigenvectors")
+        self.log_result(its, "Implied Timescales")
+        
     def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices):
         if len(predictions) > 1:
             self.raise_error("Expected predictions for a single batch, "
@@ -142,6 +158,10 @@ class Ala2Writer(ALA2TestPlotter, BasePredictionWriter):
         
         fig, ax = plot_energies(predictions)
         self.log_image(fig, "predicted_energies")
+        
+        if 'Latent' in predictions:
+            latent = predictions['Latent'].cpu().numpy()
+            self.output_traj_variables(latent)
 
 
 

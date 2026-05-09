@@ -20,6 +20,22 @@ def periodic_average(x, period=2*np.pi):
     x2 = np.arctan2(np.mean(np.sin(x[:,1])), np.mean(np.cos(x[:,1])))
     return np.array([x1, x2])
 
+def calculate_transfer_matrix(trajectory: np.ndarray, lag=1):
+    """ Estimate the transfer operator from data X with a given lag time """
+    # Paired snapshots at lag time
+    X_t   = trajectory[:-lag]   # shape (T-lag, d)
+    X_t1  = trajectory[lag:]    # shape (T-lag, d)
+
+    # Instantaneous (C0) and time-lagged (Ctau) correlation matrices
+    C0   = X_t.T @ X_t    # (d, d)
+    Ctau = X_t.T @ X_t1   # (d, d)
+
+    # Transfer matrix K = C0^{-1} Ctau via least-squares (handles underdetermined case)
+    K, _, _, _ = np.linalg.lstsq(C0, Ctau, rcond=None)  # (d, d)
+    
+    return K
+
+    
 
 
 
