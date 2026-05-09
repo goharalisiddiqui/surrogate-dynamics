@@ -2,7 +2,7 @@ debug: False
 output_to_file: True
 overwrite: True
 outfolder: no_rare_minima/ver
-nexp: 2
+nexp: 4
 description: "Dataset that contains no rare minima. 8-1"
 
 datamodule_type: SEQUENCE
@@ -27,6 +27,7 @@ datamodule_args:
     batch_size : 16
     validation_size : 32
     val_batch_size : 8
+    test_full_dataset: True
     num_workers : 4
     norm_type : "minmax"
 

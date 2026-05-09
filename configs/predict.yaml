@@ -14,10 +14,9 @@ datamodule_args:
         selection: "(resname ALA or resname ACE or resname NME) and not element H"
         parallel: False
     dataset_type : "GRAPH"
-data_analyser_type: ALA2
 
 propagator_type: TFT
-propagator_train_path: train_runs/propagator/tft/cg/gaussian_regression/run_8
+propagator_train_path: train_runs/propagator/tft/cg/gaussian_regression/run_2
 
 inference_args:
     predict_steps: 100
@@ -29,7 +28,12 @@ inference_plotter_args:
     kde_sigma: 0.2
     kde_bin_x: 200
     kde_bin_y: 200
-    minima_tolerance: 0.5
+    minima_tolerance: 0.1
     n_minima_compare: 6
     n_BFGS_runs: 100
+    labels_selection_map:
+        phi_2_cos: [dihedral_cos, 6]
+        phi_2_sin: [dihedral_sin, 6]
+        psi_2_cos: [dihedral_cos, 10]
+        psi_2_sin: [dihedral_sin, 10]
 #####################################################################

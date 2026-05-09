@@ -239,7 +239,7 @@ def train(config_path: str, debug: bool = False):
     ##################################
     if config.get('test_plotter_type', False):
         model.add_test_plotter(config['test_plotter_type'], config.get('test_plotter_args', None))  
-    trainer.test(model, datamodule=dm)
+        trainer.test(model, datamodule=dm)
 
 
 def main():

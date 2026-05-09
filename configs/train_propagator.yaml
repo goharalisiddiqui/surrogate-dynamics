@@ -2,7 +2,7 @@ debug: False
 outpath: ./train_runs/propagator/tft/cg/gaussian_regression/no_rare_minima
 outfolder: run
 overwrite: True
-nexp: 2
+nexp: 1
 output_to_file: True
 
 # Trainer Settings
@@ -22,34 +22,8 @@ scheduler_args:
     patience: 10
     min_lr: 0.001
 
-load_datamodule: dmods/no_rare_minima/ver_1
-# dynamics_name: XTC_graph
-# data_args:
-#     datareader_type: "XTC_CHUNKS_CG"
-#     datareader_args:
-#         xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
-#         tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
-#         selection: "(resname ALA or resname ACE or resname NME) and not element H"
-#         cg_window: 4
-#     dataset_type : "GRAPH"
-#     # dataset_args:
-#     #     encoder_name: BGE
-#     #     encoder_ckpt: ./train_runs/encoder/bge/run_1/checkpoints/best.ckpt
-#     n_seq_per_sample : 512
-#     train_size : 64
-#     batch_size : 2
-#     validation_size : 8
-#     val_batch_size : 2
-#     num_workers : 1
-#     norm_type : "minmax"
-
+load_datamodule: dmods/no_rare_minima/ver_3
 data_analyser_type: ALA2
-
-encoder_name: BGE
-encoder_ckpt: ./train_runs/encoder/bge/run_1/checkpoints/best.ckpt
-
-# loss_e2e_weight: 0.0
-loss_encdec_weights: [0.01, 0.01, 0.49, 0.49] # Should sum to 1.0
 
 propagator_type: TFT
 propagator_args:
@@ -61,8 +35,10 @@ propagator_args:
     dropout: 0.0
     retain_lstm_cell_state: False
     encdec_type: BGE
-    encdec_ckpt: ./train_runs/encoder/bge/run_2/checkpoints/saved.ckpt
+    encdec_ckpt: ./train_runs/encoder/bge/run_3/checkpoints/saved.ckpt
 
+    loss_e2e_weight: 0.0
+    loss_encdec_weights: [0.01, 0.01, 0.49, 0.49]
     likelihood: Gaussian
     likelihood_args:
         prior_mu: 0.0

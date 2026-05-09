@@ -25,6 +25,7 @@ from collective_encoder.common.config_check import (
 from collective_encoder.dataanalysers.resolver import get_dataanalyser
 
 from datamodules.resolver import get_datamodule
+from inferenceplotters.resolver import get_inference_plotter
 
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'configs', 'predictor', 'defaults.yaml')
@@ -133,7 +134,7 @@ def predict(config_path: str, debug: bool = False):
         dm_args['sequential'] = True
         validate_required_fields(dm_args, get_required_init_args(dm_cls))
         dm = dm_cls(dm_args, **metargs)
-        
+    
     ##################################
     # Data analysis and visualization
     ##################################
@@ -167,23 +168,42 @@ def predict(config_path: str, debug: bool = False):
     nn_type = config['propagator_type']
     nn_cls = get_propagator(nn_type)
     
-    # torch.serialization.add_safe_globals(torch.serialization.get_unsafe_globals_in_checkpoint(dmod_ckpt)) # !!! Very Unsafe, only do this if you trust the source of the checkpoint !!!
-    prop = nn_cls.load_from_checkpoint(nn_ckpt, 
+    # ------------------------------------------------------------------
+    # For backward compatibility with old checkpoints
+    # ------------------------------------------------------------------
+    hprams = torch.load(nn_ckpt, weights_only=False, map_location='cpu')['hyper_parameters']
+    if 'propagator_args' in hprams:
+        _log.info("Checkpoint is from an older version. Updating config with checkpoint hyperparameters for compatibility.")
+        args = hprams['propagator_args']
+        for name in [
+            'likelihood', 
+            'likelihood_args',
+            'encdec_model',
+            ]:
+            if name in hprams:
+                _log.info(f"Overriding argument '{name}' from checkpoint. ")
+                args[name] = hprams[name]
+        prop = nn_cls.load_from_checkpoint(nn_ckpt, 
+                                        strict=False,
                                         datamodule=dm,
+                                        args=args,
                                         **metargs)
+    # ------------------------------------------------------------------
+    else:
+        prop = nn_cls.load_from_checkpoint(nn_ckpt, 
+                                            datamodule=dm,
+                                            **metargs)
 
-    prop.set_predict_settings(
-        predict_steps=config['datamodule_args']['predict_steps'],
-        sampling_temperature=config.get('sampling_temperature', 1.0),
-        fixed_sigma=config.get('fixed_sigma', False)
+    prop.set_inference_settings(
+        **config['inference_args']
     )
 
     ##################################
     # Prediction
     ##################################
-    pred_writer = PredictionWriter(output_dir=run_dir, 
-                                write_interval="epoch", 
-                                config=config.get('inference_plotter_args', {}))
+    InferencePlotter = get_inference_plotter(config['inference_plotter_type'])
+    pred_writer = InferencePlotter(args=config.get('inference_plotter_args', {}), **metargs)
+
     predictor_args = {}
     predictor_args['default_root_dir'] = run_dir
     predictor_args['accelerator'] = "cpu"
@@ -192,7 +212,7 @@ def predict(config_path: str, debug: bool = False):
 
     predictor = pl.Trainer(**predictor_args)
 
-    predictor.predict(prop, datamodule=datamod, return_predictions=False)
+    predictor.predict(prop, datamodule=dm, return_predictions=False)
 
 
 def main():

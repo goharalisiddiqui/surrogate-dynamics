@@ -21,6 +21,9 @@ _DEFAULT_OUTPUTS = {
     'dihedral_sin': 'y_torsions_sin',
 }
 
+
+    
+
 class PropagatorTFT(CENetBase):
     _IDENTFIER = "PropagatorTFT"
     _REQUIRED_ARGS = ['input_chunk_length', 'output_chunk_length']
@@ -38,6 +41,7 @@ class PropagatorTFT(CENetBase):
         'loss_encdec_weights': [1.0, 1.0, 1.0, 1.0],
         'out_labels': _DEFAULT_OUTPUTS.copy(),
         'inference_settings': None,
+        'encdec_model': None,
         'encdec_type': None,
         'encdec_ckpt': None,
     })
@@ -50,7 +54,7 @@ class PropagatorTFT(CENetBase):
     ):
         self.save_hyperparameters(ignore=['datamodule'])
         super().__init__(args, **kwargs)
-
+        
         self.sequence_length = (
             self.input_chunk_length + 
             self.output_chunk_length
@@ -65,34 +69,7 @@ class PropagatorTFT(CENetBase):
         self.inference_settings.setdefault('sampling_temperature', 1.0)
         self.inference_settings.setdefault('fixed_sigma', False)
         
-        if self.encdec_type is None:
-            self._encoder_mode = False
-            datapoint_shape = datamodule.get_datapoint_shape()
-            if not isinstance(datapoint_shape, (tuple, list)):
-                self.raise_error(f"Expected datamodule.get_datapoint_shape() "
-                                 f"to return a tuple or list, got {type(datapoint_shape)} "
-                                 f"this suggest a mismatch between the datamodule and the propagator."
-                                )
-            self.latent_dim = datamodule.get_datapoint_shape()[-1]
-            self.log_msg("No encoder-decoder model provided. "
-                         "Propagator will expect latent inputs directly.")
-        else:
-            self._encoder_mode = True
-            if self.normIn:
-                self.raise_error("Normalization not supported when encoder-decoder model is used. "
-                                 "Please set normIn to False.")
-            encdec_type = self.encdec_type
-            encdec_ckpt = self.encdec_ckpt
-            if any(x is None for x in [encdec_type, encdec_ckpt]):
-                self.raise_error("Encoder type and checkpoint must be specified for TFT propagator")
-            encdec_cls = get_encdec(encdec_type)
-            encdec = encdec_cls.load_from_checkpoint(encdec_ckpt, 
-                                    datamodule=datamodule)
-            self.encdec_model = encdec
-            self.encdec_model.eval()
-            for param in self.encdec_model.parameters():
-                param.requires_grad = False
-            self.latent_dim = self.encdec_model.latent_dim
+        self._init_encdec(datamodule)
         self._init_propagator()
         
         self.losses = {
@@ -111,6 +88,47 @@ class PropagatorTFT(CENetBase):
                                 f"{len(self.out_labels)}")
             
         self.test_metrics = self.metrics.copy()
+    
+    def _init_encdec(self, datamodule):
+        if self.encdec_model is not None:
+            if self.encdec_type is not None or self.encdec_ckpt is not None:
+                self.raise_error("If encdec is provided directly, "
+                                 "encdec_type and encdec_ckpt should not be provided.")
+            self._encoder_mode = True
+            self.check_and_solve_backwards_compatibility(datamodule) # In case we are loading a ckpt for older version.
+            self.encdec_model.eval()
+            for param in self.encdec_model.parameters():
+                param.requires_grad = False
+            self.latent_dim = self.encdec_model.latent_dim
+            self.log_msg("Using provided encoder-decoder model.")
+        elif self.encdec_type is not None:
+            self._encoder_mode = True
+            if self.normIn:
+                self.raise_error("Normalization not supported when encoder-decoder model is used. "
+                                 "Please set normIn to False.")
+            encdec_type = self.encdec_type
+            encdec_ckpt = self.encdec_ckpt
+            if encdec_ckpt is None:
+                self.raise_error("Both encdec_ckpt must be provided to use an encoder-decoder model.")
+            encdec_cls = get_encdec(encdec_type)
+            encdec = encdec_cls.load_from_checkpoint(encdec_ckpt, 
+                                    datamodule=datamodule)
+            self.encdec_model = encdec
+            self.encdec_model.eval()
+            for param in self.encdec_model.parameters():
+                param.requires_grad = False
+            self.latent_dim = self.encdec_model.latent_dim
+        else:
+            self._encoder_mode = False
+            datapoint_shape = datamodule.get_datapoint_shape()
+            if not isinstance(datapoint_shape, (tuple, list)):
+                self.raise_error(f"Expected datamodule.get_datapoint_shape() "
+                                 f"to return a tuple or list, got {type(datapoint_shape)} "
+                                 f"this suggest a mismatch between the datamodule and the propagator."
+                                )
+            self.latent_dim = datapoint_shape[-1]
+            self.log_msg("No encoder-decoder model provided. "
+                         "Propagator will expect latent inputs directly.")
 
     def _init_propagator(self):
         (
@@ -257,7 +275,7 @@ class PropagatorTFT(CENetBase):
             self.likelihood is not None else \
                 self.loss_fn(prop_out, latent)
 
-        return loss_prop
+        return loss_prop, {}
     
     def loss_topol(self, inp, latent, output, labels, meta):
         topol = meta['prop_dec']
@@ -360,12 +378,12 @@ class PropagatorTFT(CENetBase):
         #         gnn_out[k] = torch.cat(gnn_out[k], dim=0)
         # else:
 
-        gnn_out = self.encdec_model.decode(prop_out)
+        gnn_out, _ = self.encdec_model._decode(prop_out)
         pred = { "Predicted": gnn_out }
 
         if latent.size(0) == gnn_out['bond_dist'].size(0): # If the number of predicted graphs matches the number of input graphs, we can also include the true labels in the output for comparison.
             pred['True'] = labels
-            pred['Decoded'] = self.encdec_model._decode(latent)
+            pred['Decoded'], _ = self.encdec_model._decode(latent)
 
         return pred
     
@@ -385,3 +403,58 @@ class PropagatorTFT(CENetBase):
                                  f"'{batch_attr}' for output label '{out_label}'")
             labels[out_label] = getattr(batch, batch_attr).view(num_graphs, -1)
         return labels
+    
+    # ------------------------------------------------------------------
+    # Backwards compatibility handling
+    # ------------------------------------------------------------------
+        
+    def check_and_solve_backwards_compatibility(self, datamodule):
+        hprams = self.encdec_model.hparams
+        if 'args' in hprams:
+            self.log_info("Checkpoint contains 'args' key in hyperparameters. "
+                        "This suggests its from the new version. ")
+
+        # Check for type of the encdec model to determine how to handle backwards compatibility
+        # We only know the BGE type from the old version
+        encdec_type = self.encdec_model.__class__.__name__
+        if encdec_type != "BondGraphEncoderDecoder":
+            self.raise_error(f"Unsupported encoder-decoder model type: {encdec_type}. "
+                            f"Expected 'BondGraphEncoderDecoder'.")
+
+        # Create instance with the new code
+        encdec_type = 'BGE'
+        encdec_cls = get_encdec(encdec_type)
+        
+        args = {}
+        for key in [
+            'encoder_args', 
+            'decoder_args',
+            'normIn',
+        ]:
+            if key in hprams:
+                self.log_info(f"Found matching hyperparameter for encoder-decoder: {key}")
+                args[key] = hprams[key]
+            else:
+                self.raise_error(f"Missing expected hyperparameter '{key}' for encoder-decoder model.")
+        
+        encdec_model = encdec_cls(args=args, 
+                                    datamodule=datamodule,
+                                    **self.run_args)
+        if hprams['normIn'] == True:
+            encdec_model.set_norm()
+        
+        compatibility_map = {
+            'gnn_enc': 'encoder_net',
+            'gnn_dec': 'decoder_net',
+        }
+        state_dict = self.encdec_model.state_dict()
+        encdec_state_dict = {}
+        for key in state_dict:
+            new_key = key
+            for old_substr, new_substr in compatibility_map.items():
+                if old_substr in new_key:
+                    new_key = new_key.replace(old_substr, new_substr)
+            encdec_state_dict[new_key] = state_dict[key]
+        encdec_model.load_state_dict(encdec_state_dict, strict=False)
+        self.log_info("Loaded encoder-decoder model state dict with backwards compatibility handling.")
+        self.encdec_model = encdec_model

@@ -1,16 +1,4 @@
-#! /bin/bash
-#SBATCH -J SG
-#SBATCH -N 1
-#SBATCH -n 1
-#SBATCH -c 8
-#SBATCH -p gpucloud
-#SBATCH --mem=24G
-##SBATCH --gres=shard:rtx_4000_ada:1
-#SBATCH --time=100:00:00
-#SBATCH --export=ALL
-#SBATCH -o ./slurm_logs/slurm-%J.out
-#SBATCH -e ./slurm_logs/slurm-%J.err
-
+#!/bin/sh
 
 ####### PREPARE ENV #######
 if [ ! -d ".venv" ]; then
@@ -45,5 +33,6 @@ do
         s) script="${OPTARG}";;
     esac
 done
+
 
 $pref python ${script} --config ${config} ${extra}

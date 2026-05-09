@@ -14,3 +14,5 @@ slurm_logs/
 dmods/
 *.png
 .vscode/
+run_cpu.sh
+run_gpu.sh
