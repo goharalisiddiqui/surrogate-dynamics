@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.neighbors import KernelDensity
-from scipy.optimize import minimize
+from scipy.optimize import minimize, linear_sum_assignment
 
 import matplotlib.pyplot as plt
 from matplotlib import cm
@@ -74,13 +74,56 @@ def build_msm(kde, n_BFGS_runs, minima_tolerance):
     return min_points, min_vals
 
 def check_correct_minima(minima_model, minima_ref, tolerance):
-    minima_model = minima_model[:len(minima_ref)]
-    dists, correct_dists, idx_correct  = [], [], []
-    for i in range(len(minima_model)):
-        dist = periodic_norm_distance(minima_model[i], minima_ref[i], period=2*np.pi)
-        dists.append(dist)
+    """
+    Match minima_model to minima_ref using optimal assignment.
+    
+    Uses linear_sum_assignment to find the best pairing between model and reference minima
+    based on periodic distance (accounts for angular periodicity).
+    
+    Parameters:
+    -----------
+    minima_model : np.ndarray
+        Model-predicted minima of shape (N, 2)
+    minima_ref : np.ndarray
+        Reference minima of shape (M, 2)
+    tolerance : float
+        Maximum distance to consider a match as "correct"
+    
+    Returns:
+    --------
+    tuple
+        - matched_minima : np.ndarray
+            Model minima that were successfully matched (within tolerance)
+        - correct_dists : list
+            Distances of correct matches
+        - all_dists : np.ndarray
+            Full cost matrix of all pairwise distances
+    """
+    # Compute pairwise periodic distances (cost matrix)
+    n_model = len(minima_model)
+    n_ref = len(minima_ref)
+    
+    cost_matrix = np.zeros((n_model, n_ref))
+    for i in range(n_model):
+        for j in range(n_ref):
+            cost_matrix[i, j] = periodic_norm_distance(
+                minima_model[i], minima_ref[j], period=2*np.pi
+            )
+    
+    # Find optimal assignment using Hungarian algorithm
+    model_indices, ref_indices = linear_sum_assignment(cost_matrix)
+    
+    # Extract matched pairs and filter by tolerance
+    matched_minima = []
+    correct_dists = []
+    dists = []
+    for m_idx, r_idx in zip(model_indices, ref_indices):
+        dist = cost_matrix[m_idx, r_idx]
+        dists.append(dist)  
         if dist <= tolerance:
+            matched_minima.append(minima_model[m_idx])
             correct_dists.append(dist)
-            idx_correct.append(i)
-
-    return minima_model[idx_correct], correct_dists, dists
+    
+    matched_minima = np.array(matched_minima) if matched_minima else np.empty((0, 2))
+    
+    return matched_minima, correct_dists, np.array(dists)

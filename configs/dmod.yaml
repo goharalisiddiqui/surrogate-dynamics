@@ -1,13 +1,15 @@
 debug: False
 output_to_file: True
-overwrite: True
-outfolder: no_rare_minima/ver
-nexp: 4
-description: "Dataset that contains no rare minima. 8-1"
+overwrite: False
+outpath: ./dmods_v2
+outfolder: ver
+nexp: 1
+description: "Dataset from 300K. 8-1"
+verbose: INFO
 
 datamodule_type: SEQUENCE
 datamodule_args:
-    datareader_type: "XTC_CHUNKS_CG_PP"
+    datareader_type: "XTC_CHUNKS_CG"
     datareader_args:
         xtcfile: ./data_generation/ala2/solvated/300K/ala2_100ns/md.xtc
         tprfile: ./data_generation/ala2/solvated/300K/initialization/tpr_initial.tpr
@@ -27,7 +29,8 @@ datamodule_args:
     batch_size : 16
     validation_size : 32
     val_batch_size : 8
-    test_full_dataset: True
+    test_size: 32
+    test_batch_size: 8
     num_workers : 4
     norm_type : "minmax"
 

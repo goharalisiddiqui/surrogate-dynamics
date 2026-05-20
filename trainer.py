@@ -84,9 +84,18 @@ def train(config_path: str, debug: bool = False):
     ##################################
     # Meta args used in all modules
     ##################################
+    logging_level = config.get('verbose', 'INFO')
+    if logging_level is True:
+        logging_level = 'INFO'
+    if logging_level is False:
+        logging_level = 'WARNING'
+    if not hasattr(logging, logging_level.upper()):
+        raise ValueError(f"Invalid logging level: {logging_level}. "
+                         f"Valid levels: {logging._nameToLevel.keys()}")
+    logging_level = getattr(logging, config.get('verbose', 'INFO').upper(), logging.INFO)
     logging.basicConfig(filename=os.path.join(run_dir, "run.log"),
                         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                        level=logging.INFO)
+                        level=logging_level)
     metargs = {
         'verbose': config.get('verbose', True),
         'root_logger_name': __name__,
@@ -161,15 +170,16 @@ def train(config_path: str, debug: bool = False):
 
     load_model = config.get('load_model', None)
     if load_model != None:
+        if len(config['propagator_args']) > 0:
+            _log.warning("propagator_args will be ignored when loading a model.")
+            config['propagator_args'] = {}
         checkpoint_file = load_model
         print(f"Loading model from {checkpoint_file}")
         model = nn_cls.load_from_checkpoint(checkpoint_file, 
-                                            datamodule=dm,
                                             args=nn_args, **metargs)
     else:
-        model = nn_cls(datamodule=dm, 
-                       args=nn_args, 
-                       **metargs)
+        nn_args = nn_cls.extract_args_from_datamodule(dm, nn_args)
+        model = nn_cls(args=nn_args, **metargs)
 
     ##################################
     # Training the NN
@@ -220,6 +230,10 @@ def train(config_path: str, debug: bool = False):
     # trainargs["gradient_clip_algorithm"] = "norm"
 
     trainer = pl.Trainer(**trainargs)
+    
+    # Save the config used for this run
+    with open(os.path.join(run_dir, "config.yaml"), 'w') as f:
+        yaml.dump(config, f)
 
     if config['nepochs'] > 0:
         trainer.fit(model, datamodule=dm)

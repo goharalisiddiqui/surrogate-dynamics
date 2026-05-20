@@ -90,9 +90,18 @@ def predict(config_path: str, debug: bool = False):
     ##################################
     # Meta args used in all modules
     ##################################
+    logging_level = config.get('verbose', 'INFO')
+    if logging_level is True:
+        logging_level = 'INFO'
+    if logging_level is False:
+        logging_level = 'WARNING'
+    if not hasattr(logging, logging_level.upper()):
+        raise ValueError(f"Invalid logging level: {logging_level}. "
+                         f"Valid levels: {logging._nameToLevel.keys()}")
+    logging_level = getattr(logging, config.get('verbose', 'INFO').upper(), logging.INFO)
     logging.basicConfig(filename=os.path.join(run_dir, "run.log"),
                         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                        level=logging.INFO)
+                        level=logging_level)
     metargs = {
         'verbose': config.get('verbose', True),
         'root_logger_name': __name__,
@@ -124,13 +133,15 @@ def predict(config_path: str, debug: bool = False):
         check_dict_contains_keys(config, required_keys=[
             'datamodule_type', 'datamodule_args'
         ])
+        predict_steps = config['inference_args']['predict_steps'] if \
+            config['inference_args'].get('plot_decoded', False) else 100
         dm_type = config['datamodule_type']
         dm_args = config['datamodule_args']
         dm_cls = get_datamodule(dm_type)
         dm_args['train_size'] = 0
         dm_args['batch_size'] = 0
-        dm_args['predict_size'] = config['inference_args']['predict_steps']
-        dm_args['max_frames'] = config['inference_args']['predict_steps']
+        dm_args['predict_size'] = predict_steps
+        dm_args['max_frames'] = predict_steps
         dm_args['sequential'] = True
         validate_required_fields(dm_args, get_required_init_args(dm_cls))
         dm = dm_cls(dm_args, **metargs)
@@ -185,13 +196,11 @@ def predict(config_path: str, debug: bool = False):
                 args[name] = hprams[name]
         prop = nn_cls.load_from_checkpoint(nn_ckpt, 
                                         strict=False,
-                                        datamodule=dm,
                                         args=args,
                                         **metargs)
     # ------------------------------------------------------------------
     else:
         prop = nn_cls.load_from_checkpoint(nn_ckpt, 
-                                            datamodule=dm,
                                             **metargs)
 
     prop.set_inference_settings(

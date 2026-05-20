@@ -83,9 +83,18 @@ def prepare(config_path: str, debug: bool = False):
     ##################################
     # Meta args used in all modules
     ##################################
+    logging_level = config.get('verbose', 'INFO')
+    if logging_level is True:
+        logging_level = 'INFO'
+    if logging_level is False:
+        logging_level = 'WARNING'
+    if not hasattr(logging, logging_level.upper()):
+        raise ValueError(f"Invalid logging level: {logging_level}. "
+                         f"Valid levels: {logging._nameToLevel.keys()}")
+    logging_level = getattr(logging, config.get('verbose', 'INFO').upper(), logging.INFO)
     logging.basicConfig(filename=os.path.join(run_dir, "run.log"),
                         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                        level=logging.INFO)
+                        level=logging_level)
     metargs = {
         'verbose': config.get('verbose', True),
         'root_logger_name': __name__,
@@ -96,7 +105,6 @@ def prepare(config_path: str, debug: bool = False):
     # Importing Lightning Modules
     ##################################
     dm_type = config['datamodule_type']
-    
     dm_args = config['datamodule_args']
     dm_cls = get_datamodule(dm_type)
     

@@ -3,7 +3,6 @@ outfolder: run
 overwrite: True
 nexp: 1
 output_to_file: True 
-plot_decoded: False
 
 datamodule_type: COORDINATES
 datamodule_args:
@@ -16,12 +15,13 @@ datamodule_args:
     dataset_type : "GRAPH"
 
 propagator_type: TFT
-propagator_train_path: train_runs/propagator/tft/cg/gaussian_regression/run_2
+propagator_train_path: ./train_runs_v2/propagator/tft/cg/gaussian_regression/run_1
 
 inference_args:
+    plot_decoded: False
     predict_steps: 50000
     sampling_temperature: 1.0
-    fixed_sigma: True
+    fixed_sigma: False
 
 inference_plotter_type: ALA2
 inference_plotter_args:

@@ -9,7 +9,5 @@ class ModifiedGaussianLikelihood(GaussianLikelihood):
         mu, sigma = self._params_from_output(model_output)
         if fixed_sigma:
             return torch.normal(mu, temperature)
-        sigma = sigma * temperature
-        
-        return torch.normal(mu, sigma)
+        return torch.normal(mu, sigma * temperature)
 

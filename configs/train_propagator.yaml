@@ -1,14 +1,14 @@
 debug: False
-outpath: ./train_runs/propagator/tft/cg/gaussian_regression/no_rare_minima
+outpath: ./train_runs_v2/propagator/tft/cg/gaussian_regression/
 outfolder: run
-overwrite: True
+overwrite: False
 nexp: 1
 output_to_file: True
 
 # Trainer Settings
 nepochs: 2000
 weight_decay: 0.0
-wandb: False
+wandb: True
 wandb_project: SurrogateDynamics-Propagator-CG
 wandb_entity: goharalisiddiqui-tum
 lrate: 0.001
@@ -22,29 +22,29 @@ scheduler_args:
     patience: 10
     min_lr: 0.001
 
-load_datamodule: dmods/no_rare_minima/ver_3
-data_analyser_type: ALA2
+load_datamodule: dmods_v2/ver_1
+# data_analyser_type: ALA2
 
 propagator_type: TFT
 propagator_args:
     input_chunk_length: 8
     output_chunk_length: 1
     hidden_dim: 128
-    lstm_layers: 4
-    num_attention_heads: 4
+    lstm_layers: 3
+    num_attention_heads: 3
     dropout: 0.0
     retain_lstm_cell_state: False
     encdec_type: BGE
-    encdec_ckpt: ./train_runs/encoder/bge/run_3/checkpoints/saved.ckpt
+    encdec_ckpt: ./train_runs/encoder/bge/run_3/checkpoints/best.ckpt
 
-    loss_e2e_weight: 0.0
+    loss_e2e_weight: 1.0
     loss_encdec_weights: [0.01, 0.01, 0.49, 0.49]
     likelihood: Gaussian
     likelihood_args:
         prior_mu: 0.0
         prior_sigma: 1.0
         prior_strength: 0.0
-        beta_nll: 1.0 # Weight for NLL loss. [0,1] 0 -> MSE, 1 -> NLL, High values means high weight on low error points
+        beta_nll: 0.3 # Weight for NLL loss. [0,1] 0 -> MSE, 1 -> NLL, High values means high weight on low error points
     # likelihood: LogNormal
     # likelihood_args:
     #     prior_mu: 0.0

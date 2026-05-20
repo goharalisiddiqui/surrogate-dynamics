@@ -103,15 +103,15 @@ class Ala2Writer(ALA2TestPlotter, BasePredictionWriter):
                 correct_minima, 
                 lag=1)
             fig, ax = self.plot_matrix(transition_counts, 
-                                       title="Transition Counts",
+                                       label="Transition Counts",
                                        tag = "Source_Target")
             self.log_image(fig, "transition_counts")
             fig, ax = self.plot_matrix(transition_matrix, 
-                                       title="Transition Matrix",
+                                       label="Transition Matrix",
                                        tag = "Source_Target")
             self.log_image(fig, "transition_matrix")
             fig, ax = self.plot_matrix(mfpt_matrix, 
-                                       title="MFPT Matrix",
+                                       label="MFPT Matrix",
                                        tag = "Source_Target")
             self.log_image(fig, "mfpt_matrix")
             

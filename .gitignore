@@ -9,9 +9,9 @@ lightning_logs/
 *.log
 md17_data/
 darts_logs/
-*_runs/
+*_runs*/
 slurm_logs/
-dmods/
+dmods*/
 *.png
 .vscode/
 run_cpu.sh
