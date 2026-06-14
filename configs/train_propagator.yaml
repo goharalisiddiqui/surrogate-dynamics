@@ -22,13 +22,13 @@ scheduler_args:
     patience: 10
     min_lr: 0.001
 
-load_datamodule: dmods_v2/ver_1
+load_datamodule: dmods_v2/ver_3
 # data_analyser_type: ALA2
 
 propagator_type: TFT
 propagator_args:
     input_chunk_length: 8
-    output_chunk_length: 1
+    output_chunk_length: 8
     hidden_dim: 128
     lstm_layers: 3
     num_attention_heads: 3
@@ -44,7 +44,7 @@ propagator_args:
         prior_mu: 0.0
         prior_sigma: 1.0
         prior_strength: 0.0
-        beta_nll: 0.3 # Weight for NLL loss. [0,1] 0 -> MSE, 1 -> NLL, High values means high weight on low error points
+        beta_nll: 1.0 # Weight for NLL loss. [0,1] 0 -> MSE, 1 -> NLL, High values means high weight on low error points
     # likelihood: LogNormal
     # likelihood_args:
     #     prior_mu: 0.0

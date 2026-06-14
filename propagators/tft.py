@@ -1,13 +1,12 @@
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Tuple
 from tqdm import tqdm
 
 import numpy as np
 
 import torch
-from torch import nn, var
+from torch import nn
 import torch.nn.functional as F
 
-from collective_encoder.collective_encoder import trainer
 from collective_encoder.nets.base import CENetBase
 from likelihoods.resolver import likelihood_resolver
 from propagators.tft_model.tft import ModifiedTFTModel as TFTModel
@@ -78,8 +77,6 @@ class PropagatorTFT(CENetBase):
         
         if self.inference_settings is None:
              self.inference_settings = {}
-        self.inference_settings.setdefault('sampling_temperature', 1.0)
-        self.inference_settings.setdefault('fixed_sigma', False)
         
         self._init_encdec()
         self._init_propagator()
@@ -107,6 +104,7 @@ class PropagatorTFT(CENetBase):
                 self.raise_error("If encdec is provided directly, "
                                  "encdec_type and encdec_ckpt should not be provided.")
             self._encoder_mode = True
+            self.check_and_solve_backwards_compatibility()
             self.encdec_model.eval()
             for param in self.encdec_model.parameters():
                 param.requires_grad = False
@@ -222,17 +220,13 @@ class PropagatorTFT(CENetBase):
     def prop_sample(self, prop_out):
         extra_args = {}
         if not self.training:
-            extra_args['temperature'] = self.inference_settings['sampling_temperature']
-            extra_args['fixed_sigma'] = self.inference_settings['fixed_sigma']
+            extra_args['noise_type'] = self.inference_settings.get('noise_type', None)
+            extra_args['noise_args'] = self.inference_settings.get('noise_args', {})
             
         if self.likelihood is not None:
             return self.likelihood.sample(prop_out, **extra_args)
         else:
-            prop_out = prop_out.squeeze(-1)
-            if self.training:
-                return prop_out
-            else:
-                return torch.normal(prop_out, var)
+            return prop_out.squeeze(-1)
         
     def forward(self, data):
         if self._encoder_mode:
@@ -333,13 +327,19 @@ class PropagatorTFT(CENetBase):
     # ------------------------------------------------------------------
     
     def set_inference_settings(self, **kwargs):
+        allowed_keys = {'predict_steps', 'noise_type', 'noise_args', 'plot_decoded'}
+        unknown_keys = set(kwargs.keys()) - allowed_keys
+        if unknown_keys:
+            self.raise_error(f"Unknown keys in inference settings: {unknown_keys}. "
+                                f"Allowed keys are: {allowed_keys}")
         if 'predict_steps' in kwargs and kwargs['predict_steps'] < self.sequence_length:
             self.raise_error(f"predict_steps must be not be less than sequence_length "
                              f"({self.sequence_length}) to ensure we have "
                              f"enough warmup steps. Got predict_steps={kwargs['predict_steps']}.")
         
-        if 'fixed_sigma' in kwargs and kwargs['fixed_sigma'] == False and self.likelihood is None:
-            self.raise_error("fixed_sigma cannot be False if no likelihood is used.")
+        if 'noise_type':
+            if kwargs['noise_type'] is not None and self.likelihood is None:
+                self.raise_error("Cannot specify noise_type in inference_settings when no likelihood model is used.")
     
         self.inference_settings.update(kwargs)
             
@@ -437,53 +437,22 @@ class PropagatorTFT(CENetBase):
     # Backwards compatibility handling
     # ------------------------------------------------------------------
         
-    def check_and_solve_backwards_compatibility(self, datamodule):
-        hprams = self.encdec_model.hparams
-        if 'args' in hprams:
-            self.log_info("Checkpoint contains 'args' key in hyperparameters. "
-                        "This suggests its from the new version. ")
-
-        # Check for type of the encdec model to determine how to handle backwards compatibility
-        # We only know the BGE type from the old version
-        encdec_type = self.encdec_model.__class__.__name__
-        if encdec_type != "BondGraphEncoderDecoder":
-            self.raise_error(f"Unsupported encoder-decoder model type: {encdec_type}. "
-                            f"Expected 'BondGraphEncoderDecoder'.")
-
-        # Create instance with the new code
-        encdec_type = 'BGE'
-        encdec_cls = get_encdec(encdec_type)
-        
-        args = {}
-        for key in [
-            'encoder_args', 
-            'decoder_args',
-            'normIn',
-        ]:
-            if key in hprams:
-                self.log_info(f"Found matching hyperparameter for encoder-decoder: {key}")
-                args[key] = hprams[key]
+    def check_and_solve_backwards_compatibility(self):
+        if not hasattr(self.encdec_model, 'encoder_net'):
+            self.log_info("Encoder-decoder model is missing 'encoder_net' attribute, checking for backwards compatibility.")
+            if not hasattr(self.encdec_model, 'gnn_enc'):
+                self.raise_error("Encoder-decoder model is missing both 'encoder_net' and 'gnn_enc' attributes. Cannot determine how to load the model.")
             else:
-                self.raise_error(f"Missing expected hyperparameter '{key}' for encoder-decoder model.")
+                self.log_info("Found 'gnn_enc' attribute, will attempt to load it as 'encoder_net'.")
+            self.encdec_model.encoder_net = self.encdec_model.gnn_enc
         
-        encdec_model = encdec_cls(args=args, 
-                                    datamodule=datamodule,
-                                    **self.run_args)
-        if hprams['normIn'] == True:
-            encdec_model.set_norm()
+        if not hasattr(self.encdec_model, 'decoder_net'):
+            self.log_info("Encoder-decoder model is missing 'decoder_net' attribute, checking for backwards compatibility.")
+            if not hasattr(self.encdec_model, 'gnn_dec'):
+                self.raise_error("Encoder-decoder model is missing both 'decoder_net' and 'gnn_dec' attributes. Cannot determine how to load the model.")
+            else:
+                self.log_info("Found 'gnn_dec' attribute, will attempt to load it as 'decoder_net'.")
+            self.encdec_model.decoder_net = self.encdec_model.gnn_dec
         
-        compatibility_map = {
-            'gnn_enc': 'encoder_net',
-            'gnn_dec': 'decoder_net',
-        }
-        state_dict = self.encdec_model.state_dict()
-        encdec_state_dict = {}
-        for key in state_dict:
-            new_key = key
-            for old_substr, new_substr in compatibility_map.items():
-                if old_substr in new_key:
-                    new_key = new_key.replace(old_substr, new_substr)
-            encdec_state_dict[new_key] = state_dict[key]
-        encdec_model.load_state_dict(encdec_state_dict, strict=False)
-        self.log_info("Loaded encoder-decoder model state dict with backwards compatibility handling.")
-        self.encdec_model = encdec_model
+        # Change all model weights to float64
+        self.encdec_model.double()

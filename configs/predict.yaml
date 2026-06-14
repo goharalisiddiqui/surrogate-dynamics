@@ -1,7 +1,7 @@
 debug: False
-outfolder: run
+outfolder: run_variance_by_dimension_mean_scaled
 overwrite: True
-nexp: 1
+nexp: 3
 output_to_file: True 
 
 datamodule_type: COORDINATES
@@ -15,13 +15,16 @@ datamodule_args:
     dataset_type : "GRAPH"
 
 propagator_type: TFT
-propagator_train_path: ./train_runs_v2/propagator/tft/cg/gaussian_regression/run_1
+propagator_train_path: ./train_runs/propagator/tft/cg/gaussian_regression/run_2
 
 inference_args:
     plot_decoded: False
-    predict_steps: 50000
-    sampling_temperature: 1.0
-    fixed_sigma: False
+    predict_steps: 500000
+    noise_type: "variance_by_dimension_mean"
+    noise_args:
+        scale_factor: 3.4
+        mu_data_file: data_generation/ala2/solvated/multiensemble/mean_variance_per_latent_dimension.npy
+        var_data_file: data_generation/ala2/solvated/multiensemble/var_variance_per_latent_dimension.npy
 
 inference_plotter_type: ALA2
 inference_plotter_args:
@@ -31,7 +34,7 @@ inference_plotter_args:
     minima_tolerance: 0.15
     n_minima_compare: 6
     n_BFGS_runs: 100
-    labels_selection_map: # This is to extract phi and psi from all the dihedrals. Must be read from the output of the datareader.
+    labels_selection_map: # This is to extract phi and psi from all the dihedrals. The indices are based on the order of dihedrals in the datareader output.
         phi_2_cos: [dihedral_cos, 6]
         phi_2_sin: [dihedral_sin, 6]
         psi_2_cos: [dihedral_cos, 10]

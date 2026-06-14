@@ -61,14 +61,17 @@ class Ala2Writer(ALA2TestPlotter, BasePredictionWriter):
     def output_msm(self, data):
         data = self.label_selector(data)
         data = self.cossin_resolver(data)
-        phi, psi = data['phi_2'], data['psi_2']
+        phi, psi = data['phi_2'].cpu().detach().numpy(), data['psi_2'].cpu().detach().numpy()
+        
+        self.save_data(phi, "phi")
+        self.save_data(psi, "psi")
 
         # Step 1: Build KDE
         kde = build_kde(phi, psi, self.kde_sigma)
         fig, ax = plot_kde(kde, self.kde_bin_x, self.kde_bin_y)
         
         # Step 2: Build MSM and find minima
-        min_points, min_vals = build_msm(kde, 
+        min_points, min_vals = build_msm(kde,
                                         self.n_BFGS_runs, 
                                         self.minima_tolerance)
         self.log_result(f"Number of local minima found: {len(min_points)}")

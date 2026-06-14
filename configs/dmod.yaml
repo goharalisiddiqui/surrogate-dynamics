@@ -4,7 +4,7 @@ overwrite: False
 outpath: ./dmods_v2
 outfolder: ver
 nexp: 1
-description: "Dataset from 300K. 8-1"
+description: "Dataset from 300K. 8-8"
 verbose: INFO
 
 datamodule_type: SEQUENCE
@@ -23,9 +23,9 @@ datamodule_args:
             - phi_2
             - psi_2
     input_chunk_length: 8
-    output_chunk_length: 1
-    n_seq_per_sample : 256
-    train_size : 256
+    output_chunk_length: 8
+    n_seq_per_sample : 128
+    train_size : 128
     batch_size : 16
     validation_size : 32
     val_batch_size : 8

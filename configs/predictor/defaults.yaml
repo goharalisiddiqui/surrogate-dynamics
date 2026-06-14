@@ -11,5 +11,3 @@ datamodule_args:
 
 inference_args:
     predict_steps: 100
-    sampling_temperature: 1.0
-    fixed_sigma: False
