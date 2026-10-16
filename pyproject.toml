@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "surrogate_dynamics"
+version = "0.1.0"
+description = "A machine learning framework for creating surrogate models that predict dynamics of molecular systems"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = {text = "MIT"}
+authors = [
+    {name = "Gohar Ali Siddiqui", email = "goharalisiddiqui@gmail.com"},
+]
+keywords = ["machine learning", "molecular dynamics", "autoencoder", "deep learning", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+dependencies = [
+    "darts==0.47.0",
+    "datasets>=2.14.0",
+    "huggingface_hub>=0.20.0",
+    "collective-encoder",
+    "gslibs @ git+https://github.com/goharalisiddiqui/gslibs.git",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0.0",
+    "pytest-cov>=3.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "isort>=5.10.0",
+    "mypy>=0.950",
+]
+all = ["surrogate-dynamics[dev]"]
+
+[project.scripts]
+surrogate-dynamics-train = "surrogate_dynamics.cli:main_train"
+surrogate-dynamics-prepare = "surrogate_dynamics.cli:main_prepare_dmod"
+surrogate-dynamics-predict = "surrogate_dynamics.cli:main_predict"
+
+[project.urls]
+Homepage = "https://github.com/goharalisiddiqui/surrogate-dynamics"
+Repository = "https://github.com/goharalisiddiqui/surrogate-dynamics.git"
+Documentation = "https://github.com/goharalisiddiqui/surrogate-dynamics"
+"Bug Tracker" = "https://github.com/goharalisiddiqui/surrogate-dynamics/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["surrogate_dynamics*", "surrogate_dynamics.configs"]
+
+[tool.setuptools.package-data]
+surrogate_dynamics = ["configs/**/*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
