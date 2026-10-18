@@ -5,10 +5,10 @@ from collective_encoder.common.registry import register, lazy_exports
 from .timeseries.base import TimeseriesDataModule
 
 _BUILTINS = {
-    "TIMESERIES":              ("surrogate_dynamics.datamodules.timeseries.base",         "TimeseriesDataModule"),
-    "UNIVARIATE_TIMESERIES":   ("surrogate_dynamics.datamodules.timeseries.univariate",   "UnivariateTimeseriesDataModule"),
-    "MULTIVARIATE_TIMESERIES": ("surrogate_dynamics.datamodules.timeseries.multivariate", "MultivariateTimeseriesDataModule"),
-    "SEQUENCE":                ("surrogate_dynamics.datamodules.sequence",                "SequenceDataModule"),
+    "TIMESERIES":              ("surrogate_dynamics.datamodules.timeseries.base",          "TimeseriesDataModule"),
+    "UNIVARIATE_TIMESERIES":   ("surrogate_dynamics.datamodules.timeseries.univariate",    "UnivariateTimeseriesDataModule"),
+    "MULTIVARIATE_TIMESERIES": ("surrogate_dynamics.datamodules.timeseries.multivariate",  "MultivariateTimeseriesDataModule"),
+    "ATOMISTIC_TRAJECTORY":    ("surrogate_dynamics.datamodules.atomistic_trajectory",     "AtomisticTrajectoryDataModule"),
 }
 
 for _name, (_source, _attr) in _BUILTINS.items():

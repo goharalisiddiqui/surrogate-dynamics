@@ -109,7 +109,10 @@ class GiftEvalReader(HuggingfaceReaderBase):
                         f"Available paths under '{top_prefix}': {sorted(valid_nested)}"
                     )
         except ValueError:
-            raise
+            self.raise_error(
+                f"Could not verify sub_dataset '{self.sub_dataset}' online via HfApi; "
+                "please check your internet connection or the Hugging Face Hub status."
+            )
         except Exception as e:
             self.log_warn(
                 f"Could not verify sub_dataset '{self.sub_dataset}' online via HfApi ({e}); "

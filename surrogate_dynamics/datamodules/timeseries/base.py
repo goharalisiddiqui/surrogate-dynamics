@@ -21,7 +21,7 @@ class TimeseriesDataModule(BaseDataModule):
 
     _IDENTIFIER = "TIMESERIES"
     _COMPATIBLE_DATAREADERS = ["GIFT-EVAL", "GIFT-EVAL-PRETRAIN"]
-    _COMPATIBLE_DATASETS = ["TIMESERIES", "COLVAR"]
+    _COMPATIBLE_DATASETS = ["TIMESERIES"]
     _COMPATIBLE_LABELERS = ["DUMMY", "FROM_EXTERNAL", "CONCAT"]
 
     _REQUIRED_ARGS = BaseDataModule._REQUIRED_ARGS + [
@@ -38,9 +38,8 @@ class TimeseriesDataModule(BaseDataModule):
         "input_chunk_length": None,
         "output_chunk_length": None,
         "n_seq_per_sample": 1,
-        "sequential": False,
         "test_full_dataset": False,
-        "max_frames": None,
+        "max_datapoints": None,
         "non_readability_tolerance": 0.02,
         "data_analysers": None,
     })
@@ -69,8 +68,8 @@ class TimeseriesDataModule(BaseDataModule):
         self._resolve_sequence_length()
         self._initialize_datareader()
 
-        if self.max_frames is None:
-            self.max_frames = self.datareader.get_total_frames()
+        if self.max_datapoints is None:
+            self.max_datapoints = self.datareader.get_total_frames()
 
         if self.test_size > 0 and self.test_full_dataset:
             self.raise_error("test_size and test_full_dataset are mutually exclusive")
@@ -81,16 +80,16 @@ class TimeseriesDataModule(BaseDataModule):
             + self.predict_size
             + (0 if self.test_full_dataset else self.test_size)
         )
-        if self.max_frames < required_frames:
+        if self.max_datapoints < required_frames:
             raise ValueError(
-                f"Not enough datapoints ({self.max_frames}) in dataset "
+                f"Not enough datapoints ({self.max_datapoints}) in dataset "
                 f"for the requested split sizes (train: {self.train_size}, "
                 f"val: {self.validation_size}, test: {self.test_size}, "
                 f"predict: {self.predict_size})"
             )
 
         if self.test_full_dataset:
-            self.test_size = self.max_frames
+            self.test_size = self.max_datapoints
 
         self._create_datasets()
         self._analyze_data()
@@ -138,9 +137,11 @@ class TimeseriesDataModule(BaseDataModule):
         Instantiate the configured time-series datareader.
         """
         datareader_cls = get_module("datareaders", self.datareader_type)
+        args = self.datareader_args.copy()
+        args['n_datapoints'] = self.max_datapoints
         self.datareader = datareader_cls(
-            args=self.datareader_args,
-            **self.run_args,
+            args=args,
+            **self.get_run_args()
         )
         self.log_info(
             f"Total datapoints in datareader: {self.datareader.get_total_frames()}"
@@ -173,29 +174,19 @@ class TimeseriesDataModule(BaseDataModule):
         """
         Calculate train, validation, test, and predict indices based on split configuration.
         """
-        if self.max_frames > self.datareader.get_total_frames():
+        if self.max_datapoints > self.datareader.get_total_frames():
             raise ValueError(
-                f"max_frames ({self.max_frames}) exceeds total datapoints in datareader "
+                f"max_frames ({self.max_datapoints}) exceeds total datapoints in datareader "
                 f"({self.datareader.get_total_frames()})"
             )
-        if self.sequential:
-            self.log_debug("Calculating sequential split indices...")
-            self._calculate_sequential_indices()
-        else:
-            self.log_debug("Calculating random split indices...")
-            self._calculate_random_indices()
-
-    def _calculate_sequential_indices(self) -> None:
-        """
-        Calculate contiguous indices for sequential data splitting.
-        """
+        self.log_debug("Calculating split indices...")
         required_size = self.train_size + self.validation_size + self.predict_size
         self.log_debug(f"Base required size (train + val + predict): {required_size}")
         if not self.test_full_dataset:
             required_size += self.test_size
         self.log_debug(f"Total required size (including test): {required_size}")
 
-        start = random.randint(0, self.max_frames - required_size)
+        start = random.randint(0, self.max_datapoints - required_size)
         self.train_indices = np.arange(start, start + self.train_size)
         if len(self.train_indices) > 0:
             self.log_info(
@@ -211,7 +202,7 @@ class TimeseriesDataModule(BaseDataModule):
             )
 
         if self.test_full_dataset:
-            self.test_indices = np.arange(self.max_frames)
+            self.test_indices = np.arange(self.max_datapoints)
             pred_start = val_end
         else:
             test_end = val_end + self.test_size
@@ -227,32 +218,6 @@ class TimeseriesDataModule(BaseDataModule):
             self.log_info(
                 f"Predict indices: {self.predict_indices[0]} - {self.predict_indices[-1]}"
             )
-
-    def _calculate_random_indices(self) -> None:
-        """
-        Calculate non-overlapping random indices for train, validation, test, and predict splits.
-        """
-        all_indices = list(range(self.max_frames))
-        self.train_indices = random.sample(all_indices, self.train_size)
-        self.log_info(f"Selected {len(self.train_indices)} random train indices.")
-
-        train_set = set(self.train_indices)
-        remainder_indices = [i for i in all_indices if i not in train_set]
-        self.val_indices = random.sample(remainder_indices, self.validation_size)
-        self.log_info(f"Selected {len(self.val_indices)} random validation indices.")
-
-        val_set = set(self.val_indices)
-        remainder_indices = [i for i in remainder_indices if i not in val_set]
-        if self.test_full_dataset:
-            self.test_indices = all_indices
-        else:
-            self.test_indices = random.sample(remainder_indices, self.test_size)
-            test_set = set(self.test_indices)
-            remainder_indices = [i for i in remainder_indices if i not in test_set]
-        self.log_info(f"Selected {len(self.test_indices)} random test indices.")
-
-        self.predict_indices = random.sample(remainder_indices, self.predict_size)
-        self.log_info(f"Selected {len(self.predict_indices)} random predict indices.")
 
     def _process_split_trajs(
         self, trajs: Tuple[np.ndarray, ...]
@@ -326,7 +291,7 @@ class TimeseriesDataModule(BaseDataModule):
                 f"Creating training dataset with {len(trajs[0])} datapoints..."
             )
             self.train_data = dataset_class(
-                structures=trajs[0],
+                datapoints=trajs[0],
                 labels=labels[0],
                 args=dataset_args,
                 **{**self.run_args, "tag": "train"},
@@ -339,7 +304,7 @@ class TimeseriesDataModule(BaseDataModule):
                 f"Creating validation dataset with {len(trajs[1])} datapoints..."
             )
             self.val_data = dataset_class(
-                structures=trajs[1],
+                datapoints=trajs[1],
                 labels=labels[1],
                 args=dataset_args,
                 **{**self.run_args, "verbose": False, "tag": "val"},
@@ -350,7 +315,7 @@ class TimeseriesDataModule(BaseDataModule):
         if self.test_size > 0:
             self.log_info(f"Creating test dataset with {len(trajs[2])} datapoints...")
             self.test_data = dataset_class(
-                structures=trajs[2],
+                datapoints=trajs[2],
                 labels=labels[2],
                 args=dataset_args,
                 **{**self.run_args, "verbose": False, "tag": "test"},
@@ -363,7 +328,7 @@ class TimeseriesDataModule(BaseDataModule):
                 f"Creating predict dataset with {len(trajs[3])} datapoints..."
             )
             self.predict_data = dataset_class(
-                structures=trajs[3],
+                datapoints=trajs[3],
                 labels=labels[3],
                 args=dataset_args,
                 **{**self.run_args, "verbose": False, "tag": "predict"},

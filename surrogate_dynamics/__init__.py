@@ -14,6 +14,7 @@ EXECUTION_DIR = os.getcwd()
 
 
 from . import (
+    dataanalysers,
     datamodules,
     datareaders,
     datasets,

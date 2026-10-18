@@ -7,7 +7,7 @@ wandb/
 lightning_logs/
 *_debug_*/
 *.log
-
+*.egg-info
 md17_data/
 darts_logs/
 *_runs*/

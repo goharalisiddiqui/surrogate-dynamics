@@ -17,7 +17,7 @@ class TimeseriesDataset(Dataset, BaseDataset):
 
     Parameters
     ----------
-    structures : numpy.ndarray or list of numpy.ndarray
+    datapoints : numpy.ndarray or list of numpy.ndarray
         Time-series array of shape ``(n_datapoints, sequence_length, n_features)``
         or list of 2-D arrays of shape ``(sequence_length, n_features)``.
     labels : numpy.ndarray or list of numpy.ndarray
@@ -34,7 +34,7 @@ class TimeseriesDataset(Dataset, BaseDataset):
 
     def __init__(
         self,
-        structures: Union[np.ndarray, List[np.ndarray]],
+        datapoints: Union[np.ndarray, List[np.ndarray]],
         labels: Union[np.ndarray, List[np.ndarray]],
         args: Dict[str, Union[float, int, str]] = None,
         **kwargs,
@@ -43,13 +43,13 @@ class TimeseriesDataset(Dataset, BaseDataset):
         BaseDataset.__init__(self, args=args, **kwargs)
 
         dtype = torch.get_default_dtype()
-        arr = np.asarray(structures)
+        arr = np.asarray(datapoints)
         if arr.ndim == 2:
             # Single feature without trailing feature dim: (n_datapoints, sequence_length) -> (n_datapoints, sequence_length, 1)
             arr = arr[:, :, np.newaxis]
         elif arr.ndim != 3 and len(arr) > 0:
             self.raise_error(
-                f"Expected structures to have 3 dimensions (n_datapoints, sequence_length, n_features), "
+                f"Expected datapoints to have 3 dimensions (n_datapoints, sequence_length, n_features), "
                 f"got shape {arr.shape}."
             )
 
