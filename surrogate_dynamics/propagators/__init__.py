@@ -9,6 +9,7 @@ _BUILTINS = {
     "TFT_LATENT": ("surrogate_dynamics.propagators.tft_latent", "PropagatorTFTLatent"),
     "BGE_TFT": ("surrogate_dynamics.propagators.bge_tft", "BondGraphEncoderTFT"),
     "BGE_TFT_V2": ("surrogate_dynamics.propagators.bge_tft_v2", "BondGraphEncoderTFT"),
+    "BGE_TFT_V2": ("surrogate_dynamics.propagators.bge_tft_v2", "BondGraphEncoderTFT"),
 }   
 for _name, (_source, _attr) in _BUILTINS.items():
     register("models", _name, _source, _attr)          # uses the "source:attr" form

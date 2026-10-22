@@ -28,21 +28,31 @@ classifiers = [
 ]
 
 dependencies = [
-    "darts==0.47.0",
-    "datasets>=2.14.0",
-    "huggingface_hub>=0.20.0",
     "collective-encoder",
     "gslibs @ git+https://github.com/goharalisiddiqui/gslibs.git",
+    "darts==0.47.0",
+    "datasets~=5.1.0",
+    "huggingface_hub>=0.23.0",
+    "einops==0.7.*",
+    "jaxtyping~=0.2.24",
+    "python-dotenv==1.0.0",
+    "multiprocess",
+    "hydra-core==1.3",
+    "orjson",
+    "tensorboard",
+    "safetensors",
+    "jax[cpu]",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=6.0.0",
     "pytest-cov>=3.0.0",
-    "black>=22.0.0",
+    "black[jupyter]==24.2.0",
     "flake8>=4.0.0",
     "isort>=5.10.0",
     "mypy>=0.950",
+    "pre-commit",
 ]
 all = ["surrogate-dynamics[dev]"]
 

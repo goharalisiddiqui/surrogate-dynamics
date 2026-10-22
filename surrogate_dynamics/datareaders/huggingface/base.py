@@ -8,7 +8,6 @@ from datasets import Dataset, IterableDataset, load_dataset, load_from_disk
 from collective_encoder.common.registry import get_module
 from collective_encoder.datalabelers.base import BaseLabeler
 from collective_encoder.datareaders.base import BaseDataReader
-from collective_encoder.datareaders.processors.resolver import get_processor
 
 
 class HuggingfaceReaderBase(BaseDataReader, ABC):
@@ -50,21 +49,10 @@ class HuggingfaceReaderBase(BaseDataReader, ABC):
         "repo_id": None,
         "split": "train",
         "force_download": False,
-        "processors": None,
     })
 
     def __init__(self, args: Dict[str, Any] = None, **kwargs):
         super().__init__(args=args, **kwargs)
-
-        self.processors = []
-        processor_configs = self.args.get("processors") or []
-        for config in processor_configs:
-            processor_cls = get_processor(config["type"])
-            processor_args = config.get("args", {})
-            self.processors.append(processor_cls(**processor_args))
-            self.log_msg(
-                f"Initialized processor: {config['type']} with args {processor_args}"
-            )
 
         self._validate_arguments()
         self._validate_sub_dataset()
@@ -220,7 +208,6 @@ class HuggingfaceReaderBase(BaseDataReader, ABC):
                 batch_size=1,
                 remove_columns=stream.column_names,
             ).take(max_to_take)
-
             records = list(chunked_stream)
             if len(records) == 0:
                 self.raise_error(
@@ -259,9 +246,6 @@ class HuggingfaceReaderBase(BaseDataReader, ABC):
         Return the total number of datapoints (frames) available in the dataset.
         """
         total = self.n_frames
-        if hasattr(self, "processors"):
-            for processor in self.processors:
-                total = processor.adjust_total_frames(total)
         return total
 
     def _initialize_labeler(
@@ -321,8 +305,8 @@ class HuggingfaceReaderBase(BaseDataReader, ABC):
                 processed_seq = processor.prepare_seq(processed_seq)
             prepared_indices.append(processed_seq)
 
-        trajs, labels, all_failed = (), (), ()
-        for seq_indices in prepared_indices:
+        trajs, labels = (), ()
+        for idx, seq_indices in enumerate(prepared_indices):
             if len(seq_indices) == 0:
                 traj_split = np.empty(
                     (0, self.n_steps, self.n_features), dtype=self.data.dtype
@@ -349,6 +333,13 @@ class HuggingfaceReaderBase(BaseDataReader, ABC):
                         (0, len(self.label_list)), dtype=np.float32
                     )
 
+            self._validate_traj_length(
+                indices=seq_indices, 
+                read_indices=valid_indices, 
+                failed_indices=failed_split,
+                idx = idx,
+            )
+
             for processor in self.processors:
                 traj_split, label_split = processor.postprocess_seq(
                     traj_split, label_split
@@ -356,11 +347,10 @@ class HuggingfaceReaderBase(BaseDataReader, ABC):
 
             trajs += (traj_split,)
             labels += (label_split,)
-            all_failed += (failed_split,)
 
         self.log_msg(
             f"Finished reading Hugging Face dataset. "
             f"Split shapes: {[t.shape for t in trajs]}, "
             f"label shapes: {[l.shape for l in labels]}."
         )
-        return trajs, labels, all_failed
+        return trajs, labels

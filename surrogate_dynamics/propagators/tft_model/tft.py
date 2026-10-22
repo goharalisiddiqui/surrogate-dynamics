@@ -4,9 +4,7 @@ Temporal Fusion Transformer (TFT)
 Copied from Darts git repository
 """
 
-from collections.abc import Sequence
 from typing import Optional, Union
-from venv import logger
 from functools import wraps
 
 import numpy as np
@@ -17,7 +15,6 @@ from torch.nn import LSTM as _LSTM
 
 # from darts.logging import get_logger, raise_if, raise_if_not, raise_log
 from surrogate_dynamics.propagators.tft_model.components import glu_variants, layer_norm_variants
-from surrogate_dynamics.propagators.tft_model.components.glu_variants import GLU_FFN
 
 from surrogate_dynamics.propagators.tft_model.modules import (
     _GateAddNorm,
@@ -27,7 +24,6 @@ from surrogate_dynamics.propagators.tft_model.modules import (
     _VariableSelectionNetwork,
     get_embedding_size,
 )
-from darts.utils.likelihood_models.torch import QuantileRegression
 
 def io_processor(forward):
     """Applies some input / output processing to PLForecastingModule.forward.
@@ -70,7 +66,7 @@ def io_processor(forward):
 
     return forward_wrapper
 
-class ModifiedTFTModel(nn.Module):
+class TFTModel(nn.Module):
     def __init__(
         self,
         input_chunk_length: int,

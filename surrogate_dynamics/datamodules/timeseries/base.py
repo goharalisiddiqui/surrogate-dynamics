@@ -147,29 +147,6 @@ class TimeseriesDataModule(BaseDataModule):
             f"Total datapoints in datareader: {self.datareader.get_total_frames()}"
         )
 
-    def _validate_traj_length(
-        self,
-        traj: Any,
-        expected_length: int,
-        failed_indices: List[int] = None,
-        split_name: str = "",
-    ) -> None:
-        """
-        Validate that the read split has the expected number of datapoints.
-        """
-        if failed_indices:
-            self.warn(
-                f"[{split_name}] {len(failed_indices)} datapoint(s) could not be read "
-                f"and were skipped. Failed indices: {failed_indices}"
-            )
-        threshold = expected_length * (1 - self.non_readability_tolerance)
-        if len(traj) < threshold:
-            raise ValueError(
-                f"[{split_name}] Split length {len(traj)} is less than the minimum expected "
-                f"{threshold:.0f} datapoints (tolerance={self.non_readability_tolerance:.1%}). "
-                f"Failed indices: {failed_indices}"
-            )
-
     def _calculate_indices(self) -> None:
         """
         Calculate train, validation, test, and predict indices based on split configuration.
@@ -244,7 +221,7 @@ class TimeseriesDataModule(BaseDataModule):
         )
 
         self.log_info("Reading time-series data and labels...")
-        read_result = self.datareader.read_trajectory(
+        trajs, labels = self.datareader.read_trajectory(
             indices=[
                 self.train_indices,
                 self.val_indices,
@@ -256,35 +233,19 @@ class TimeseriesDataModule(BaseDataModule):
         )
         self.log_info("Finished reading time-series data and labels.")
 
-        if len(read_result) == 3:
-            trajs, labels, failed_per_split = read_result
-        else:
-            trajs, labels = read_result
-            failed_per_split = ([], [], [], [])
-
         trajs = self._process_split_trajs(tuple(trajs))
-
-        self._validate_traj_length(
-            trajs[0], len(self.train_indices), failed_per_split[0], split_name="train"
-        )
-        self._validate_traj_length(
-            trajs[1], len(self.val_indices), failed_per_split[1], split_name="val"
-        )
-        self._validate_traj_length(
-            trajs[2], len(self.test_indices), failed_per_split[2], split_name="test"
-        )
-        self._validate_traj_length(
-            trajs[3],
-            len(self.predict_indices),
-            failed_per_split[3],
-            split_name="predict",
-        )
 
         dataset_class, dataset_args, self.dl_cls = get_dataset_cls_dl(
             self.dataset_type,
             self.dataset_args,
             self.datareader,
         )
+        
+        dps = self.datareader.get_processors()
+        for dp in dps:
+            dataset_class = dp.get_dataset_wrapper(dataset_class, dataset_args)
+            self.log_info(f"Applied processor {dp.__class__.__name__} to dataset class.")
+            
 
         if self.train_size > 0:
             self.log_info(
