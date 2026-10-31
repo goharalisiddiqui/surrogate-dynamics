@@ -21,7 +21,7 @@ class TimeseriesDataModule(BaseDataModule):
 
     _IDENTIFIER = "TIMESERIES"
     _COMPATIBLE_DATAREADERS = ["GIFT-EVAL", "GIFT-EVAL-PRETRAIN"]
-    _COMPATIBLE_DATASETS = ["TIMESERIES"]
+    _COMPATIBLE_DATASETS = ["TIMESERIES", "DARTS_TIMESERIES"]
     _COMPATIBLE_LABELERS = ["DUMMY", "FROM_EXTERNAL", "CONCAT"]
 
     _REQUIRED_ARGS = BaseDataModule._REQUIRED_ARGS + [
@@ -37,6 +37,8 @@ class TimeseriesDataModule(BaseDataModule):
         "sequence_length": None,
         "input_chunk_length": None,
         "output_chunk_length": None,
+        "context_length": None,
+        "prediction_length": None,
         "n_seq_per_sample": 1,
         "test_full_dataset": False,
         "max_datapoints": None,
@@ -97,9 +99,15 @@ class TimeseriesDataModule(BaseDataModule):
     def _resolve_sequence_length(self) -> None:
         """
         Determine ``self.sequence_length`` from either ``sequence_length`` or
-        ``input_chunk_length + output_chunk_length * n_seq_per_sample``, and
-        inject it into ``self.datareader_args``.
+        ``input_chunk_length + output_chunk_length * n_seq_per_sample`` (or
+        ``context_length`` / ``prediction_length`` aliases), and inject chunk
+        and sequence lengths into ``self.datareader_args`` and ``self.dataset_args``.
         """
+        if self.input_chunk_length is None and self.context_length is not None:
+            self.input_chunk_length = self.context_length
+        if self.output_chunk_length is None and self.prediction_length is not None:
+            self.output_chunk_length = self.prediction_length
+
         has_chunks = (
             self.input_chunk_length is not None
             and self.output_chunk_length is not None
@@ -131,6 +139,17 @@ class TimeseriesDataModule(BaseDataModule):
                 )
 
         self.datareader_args["sequence_length"] = self.sequence_length
+
+        if self.dataset_type == "DARTS_TIMESERIES":
+            self.dataset_args.setdefault("sequence_length", self.sequence_length)
+            if self.input_chunk_length is not None:
+                self.dataset_args.setdefault(
+                    "input_chunk_length", self.input_chunk_length
+                )
+            if self.output_chunk_length is not None:
+                self.dataset_args.setdefault(
+                    "output_chunk_length", self.output_chunk_length
+                )
 
     def _initialize_datareader(self) -> None:
         """

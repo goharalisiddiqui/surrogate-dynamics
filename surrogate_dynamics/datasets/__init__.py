@@ -3,6 +3,8 @@ from collective_encoder.common.registry import register, lazy_exports
 
 _BUILTINS = {
     "TIMESERIES": ("surrogate_dynamics.datasets.timeseries", "TimeseriesDataset"),
+    "DARTS_TIMESERIES": ("surrogate_dynamics.datasets.darts_timeseries", "DartsTimeseriesDataset"),
+    "ATOMISTIC_DARTS": ("surrogate_dynamics.datasets.atomistic_darts", "AtomisticDarts"),
 }
 
 for _name, (_source, _attr) in _BUILTINS.items():

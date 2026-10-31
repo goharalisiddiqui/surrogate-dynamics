@@ -31,7 +31,7 @@ class TimeseriesDataAnalyser(SimpleDataAnalyser):
     """
 
     _IDENTIFIER = "TIMESERIES"
-    _COMPATIBLE_DATASET_TYPES = ["TIMESERIES", "COLVAR"]
+    _COMPATIBLE_DATASET_TYPES = ["TIMESERIES", "DARTS_TIMESERIES", "COLVAR"]
     _OPTIONAL_ARGS = SimpleDataAnalyser._OPTIONAL_ARGS | {
         "n_samples": 5,
         "max_features": 10,
@@ -265,7 +265,7 @@ class TimeseriesDataAnalyser(SimpleDataAnalyser):
             fontsize=11,
         )
         fig.tight_layout()
-        self._log_image(fig, f"trajectories{suffix}")
+        self.log_image(fig, f"trajectories{suffix}")
         plt.close(fig)
 
     def _plot_flattened_timeseries(
@@ -307,7 +307,7 @@ class TimeseriesDataAnalyser(SimpleDataAnalyser):
 
         axes_flat[-1].set_xlabel("Flattened time index")
         fig.tight_layout()
-        self._log_image(fig, f"timeseries{suffix}")
+        self.log_image(fig, f"timeseries{suffix}")
         plt.close(fig)
 
     def _plot_histograms(
@@ -378,5 +378,5 @@ class TimeseriesDataAnalyser(SimpleDataAnalyser):
             fontsize=11,
         )
         fig.tight_layout()
-        self._log_image(fig, f"histograms{suffix}")
+        self.log_image(fig, f"histograms{suffix}")
         plt.close(fig)

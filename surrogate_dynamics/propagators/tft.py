@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from collective_encoder.common.registry import get_module
 from collective_encoder.models.base import CENetBase
 from surrogate_dynamics.likelihoods.resolver import likelihood_resolver
-from surrogate_dynamics.propagators.tft_model.tft import ModifiedTFTModel as TFTModel
+from surrogate_dynamics.propagators.tft_model.tft import TFTModel
 
 _DEFAULT_OUTPUTS = {
     'bond_dist': 'y_bonds', 

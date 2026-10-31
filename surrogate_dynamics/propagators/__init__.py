@@ -4,11 +4,12 @@ import collective_encoder
 from collective_encoder.common.registry import register, lazy_exports
 
 _BUILTINS = {
+    "DARTS":    ("surrogate_dynamics.propagators.darts",   "DartsForecastingModel"),
+    "MOIRAI2":  ("surrogate_dynamics.propagators.moirai2.moirai2", "Moirai2"),
     "TFT":    ("surrogate_dynamics.propagators.tft",   "PropagatorTFT"),
-    "TFT_DEV": ("surrogate_dynamics.propagators.tft_dev", "PropagatorTFT"),
+    "TFT_V2": ("surrogate_dynamics.propagators.tft_v2", "PropagatorTFT"),
     "TFT_LATENT": ("surrogate_dynamics.propagators.tft_latent", "PropagatorTFTLatent"),
     "BGE_TFT": ("surrogate_dynamics.propagators.bge_tft", "BondGraphEncoderTFT"),
-    "BGE_TFT_V2": ("surrogate_dynamics.propagators.bge_tft_v2", "BondGraphEncoderTFT"),
     "BGE_TFT_V2": ("surrogate_dynamics.propagators.bge_tft_v2", "BondGraphEncoderTFT"),
 }   
 for _name, (_source, _attr) in _BUILTINS.items():

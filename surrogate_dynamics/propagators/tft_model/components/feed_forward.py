@@ -56,7 +56,7 @@ import torch
 from torch import nn as nn
 
 
-from propagators.tft_model.utils import MonteCarloDropout
+from surrogate_dynamics.propagators.tft_model.utils import MonteCarloDropout
 
 
 class FeedForward(nn.Module):
