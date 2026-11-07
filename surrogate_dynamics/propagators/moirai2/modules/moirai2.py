@@ -74,7 +74,7 @@ class Moirai2Module(
         self.encoder = TransformerEncoder(
             d_model,
             num_layers,
-            num_heads=1,
+            num_heads=None,
             pre_norm=True,
             attn_dropout_p=attn_dropout_p,
             dropout_p=dropout_p,

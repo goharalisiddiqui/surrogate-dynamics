@@ -18,5 +18,7 @@ from . import (
     datamodules,
     datareaders,
     datasets,
+    likelihoods,
     propagators,
+    testplotters,
 )

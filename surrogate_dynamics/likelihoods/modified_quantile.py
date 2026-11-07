@@ -1,5 +1,4 @@
 import os
-from darts.logging import raise_if_not
 from darts.utils.likelihood_models import QuantileRegression
 from torch.nn.functional import pairwise_distance
 
@@ -10,6 +9,8 @@ from typing import Optional
 
 
 class ModifiedQuantileRegression(QuantileRegression):
+    _IDENTIFIER = "ModifiedQuantile"
+
     def __init__(self, quantiles: Optional[list[float]] = None, enc_ckpt: Optional[str] = None, elems: Optional[list[int]] = None, bond_connections: Optional[list[tuple[int, int]]] = None):
         """
         The "likelihood" corresponding to quantile regression modified to add additional loss
@@ -20,8 +21,14 @@ class ModifiedQuantileRegression(QuantileRegression):
 
         Parameters
         ----------
-        quantiles
-            list of quantiles
+        quantiles : list of float, optional
+            List of quantiles centered around ``q = 0.5``.
+        enc_ckpt : str, optional
+            Optional path to an encoder checkpoint for coordinate-space loss terms.
+        elems : list of int, optional
+            Atomic numbers of the system atoms (required when ``enc_ckpt`` is provided).
+        bond_connections : list of tuple of (int, int), optional
+            Bonded atom index pairs (required when ``enc_ckpt`` is provided).
         """
         if enc_ckpt is not None and elems is None:
             raise ValueError("elems must be provided if enc_ckpt is provided")
@@ -33,12 +40,15 @@ class ModifiedQuantileRegression(QuantileRegression):
         self.encoder = None
         self.enc_ckpt = enc_ckpt
         elements = elems
-        cov_radii = [covalent_radii[el] for el in elements]
-        cov_radii = torch.tensor(cov_radii).float()
-        cov_radii = cov_radii.unsqueeze(0)
-        cd_t = cov_radii.transpose(0, 1)
-        cov_mat = cov_radii.unsqueeze(0) + cd_t.unsqueeze(1)
-        self.cov_mat = cov_mat.squeeze(1)
+        if elements is not None:
+            cov_radii = [covalent_radii[el] for el in elements]
+            cov_radii = torch.tensor(cov_radii).float()
+            cov_radii = cov_radii.unsqueeze(0)
+            cd_t = cov_radii.transpose(0, 1)
+            cov_mat = cov_radii.unsqueeze(0) + cd_t.unsqueeze(1)
+            self.cov_mat = cov_mat.squeeze(1)
+        else:
+            self.cov_mat = None
         self.bond_indices = bond_connections
 
     def load_encoder(self, enc_ckpt: str):
@@ -210,7 +220,7 @@ class ModifiedQuantileRegression(QuantileRegression):
         self,
         model_output: torch.Tensor,
         target: torch.Tensor,
-        sample_weight: torch.Tensor,
+        sample_weight: Optional[torch.Tensor] = None,
     ):
         """
         We are re-defining a custom loss (which is not a likelihood loss) compared to Likelihood
@@ -233,18 +243,28 @@ class ModifiedQuantileRegression(QuantileRegression):
 
         # test if torch model forward produces correct output and store quantiles tensor
         if self.first:
-            raise_if_not(
+            if not (
                 len(model_output.shape) == 4
                 and len(target.shape) == 3
-                and model_output.shape[:2] == target.shape[:2],
-                "mismatch between predicted and target shape",
+                and model_output.shape[:2] == target.shape[:2]
+            ):
+                raise ValueError("mismatch between predicted and target shape")
+            if model_output.shape[dim_q] != len(self.quantiles):
+                raise ValueError(
+                    "mismatch between number of predicted quantiles and target quantiles"
+                )
+            self.quantiles_tensor = torch.tensor(
+                self.quantiles, device=device, dtype=model_output.dtype
             )
-            raise_if_not(
-                model_output.shape[dim_q] == len(self.quantiles),
-                "mismatch between number of predicted quantiles and target quantiles",
-            )
-            self.quantiles_tensor = torch.tensor(self.quantiles).to(device)
             self.first = False
+        elif (
+            self.quantiles_tensor is None
+            or self.quantiles_tensor.device != device
+            or self.quantiles_tensor.dtype != model_output.dtype
+        ):
+            self.quantiles_tensor = torch.tensor(
+                self.quantiles, device=device, dtype=model_output.dtype
+            )
         errors = target.unsqueeze(-1) - model_output
         losses = torch.max(
             (self.quantiles_tensor - 1) * errors, self.quantiles_tensor * errors

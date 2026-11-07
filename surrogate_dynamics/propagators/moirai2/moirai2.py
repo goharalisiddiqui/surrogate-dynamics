@@ -9,6 +9,7 @@ import torch
 from einops import rearrange, reduce, repeat
 from jaxtyping import Bool, Float, Int
 
+from collective_encoder.common.registry import get_module
 from collective_encoder.models.neural_nets.base import CENetBase
 from surrogate_dynamics.propagators.moirai2.modules.imputation import CausalMeanImputation
 from surrogate_dynamics.propagators.moirai2.modules.moirai2 import Moirai2Module
@@ -39,14 +40,17 @@ class Moirai2(CENetBase):
         "num_layers": None,
         "patch_size": None,
         "max_seq_length": None,
-        "pretrain_weigths": None,
         "pretrain_weights": None,
         "dropout_p": 0.0,
         "dropout_attn_p": 0.0,
         "scaling": True,
         "num_predict_token": 1,
         "quantile_levels": (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
+        "prediction_type": "autoregressive",
     })
+
+    _AUTOREGRESSIVE_TYPES = ("autoregressive", "autoregressive_rollout", "rollout")
+    _TEACHER_FORCED_TYPES = ("teacher_forced", "teacher-forced", "teacher")
 
     @staticmethod
     def extract_args_from_datamodule(datamodule, args: dict) -> dict:
@@ -100,7 +104,10 @@ class Moirai2(CENetBase):
         if self.normIn:
             self.norm_error()
 
-        pretrained_ckpt = self.pretrain_weights or self.pretrain_weigths
+        self._validate_prediction_type()
+        self._rollout_context: Optional[torch.Tensor] = None
+
+        pretrained_ckpt = self.pretrain_weights
         if pretrained_ckpt is None:
             if not all([
                 self.hidden_dim,
@@ -132,7 +139,7 @@ class Moirai2(CENetBase):
         return list(self.parameters()) + params_from_losses
 
     def _init_propagator(self):
-        pretrained_ckpt = self.pretrain_weights or self.pretrain_weigths
+        pretrained_ckpt = self.pretrain_weights
         if pretrained_ckpt is not None:
             try:
                 self.propagator = Moirai2Module.from_pretrained(pretrained_ckpt)
@@ -1095,6 +1102,116 @@ class Moirai2(CENetBase):
             "Expected a dict of tensors from DartsTimeseriesDataset or a torch.Tensor."
         )
 
+    def _validate_prediction_type(self) -> None:
+        """
+        Validate that ``self.prediction_type`` is a supported forecasting mode.
+
+        Raises
+        ------
+        ValueError
+            If ``self.prediction_type`` is not one of the supported autoregressive
+            or teacher-forced identifiers.
+        """
+        pred_type = str(self.prediction_type).strip().lower()
+        valid = self._AUTOREGRESSIVE_TYPES + self._TEACHER_FORCED_TYPES
+        if pred_type not in valid:
+            self.raise_error(
+                f"Invalid prediction_type='{self.prediction_type}'. "
+                f"Expected one of {valid}."
+            )
+        self.prediction_type = pred_type
+
+    def _is_autoregressive(self) -> bool:
+        """
+        Return ``True`` if the model is configured for autoregressive rollout.
+
+        Returns
+        -------
+        bool
+            ``True`` when ``self.prediction_type`` is in ``_AUTOREGRESSIVE_TYPES``.
+        """
+        return str(self.prediction_type).strip().lower() in self._AUTOREGRESSIVE_TYPES
+
+    def _forward_autoregressive(
+        self,
+        parsed: Dict[str, Optional[torch.Tensor]],
+    ) -> Float[torch.Tensor, "batch num_quantiles future_time tgt"]:
+        """
+        Execute an autoregressive rollout across the batch of sequence windows.
+
+        Starts from ``self._rollout_context`` (when continuing across evaluation
+        batches) or the initial context window ``parsed['past_target'][0:1]``, and
+        iteratively predicts ``prediction_length`` steps at a time, sliding the
+        context window forward using the model's own median point predictions.
+
+        Parameters
+        ----------
+        parsed : dict of str to torch.Tensor or None
+            Normalized forward inputs returned by :meth:`_parse_forward_inputs`.
+
+        Returns
+        -------
+        torch.Tensor
+            Stacked quantile predictions of shape
+            ``(batch_size, num_quantiles, prediction_length, target_dim)``.
+        """
+        past_target = parsed["past_target"]
+        batch_size = past_target.shape[0]
+        cur_context = (
+            self._rollout_context.to(
+                device=past_target.device, dtype=past_target.dtype
+            )
+            if self._rollout_context is not None
+            else past_target[0:1]
+        )
+
+        feat_dyn = parsed["feat_dynamic_real"]
+        obs_feat_dyn = parsed["observed_feat_dynamic_real"]
+        past_feat_dyn = parsed["past_feat_dynamic_real"]
+        past_obs_feat_dyn = parsed["past_observed_feat_dynamic_real"]
+
+        step_quantile_preds: List[torch.Tensor] = []
+        for b in range(batch_size):
+            cur_obs = ~torch.isnan(cur_context)
+            cur_pad = torch.zeros(
+                cur_context.shape[:2],
+                dtype=torch.bool,
+                device=cur_context.device,
+            )
+            step_q_preds = self._forward_quantiles(
+                past_target=cur_context,
+                past_observed_target=cur_obs,
+                past_is_pad=cur_pad,
+                future_target=None,
+                future_observed_target=None,
+                future_is_pad=None,
+                feat_dynamic_real=(
+                    feat_dyn[b : b + 1] if feat_dyn is not None else None
+                ),
+                observed_feat_dynamic_real=(
+                    obs_feat_dyn[b : b + 1] if obs_feat_dyn is not None else None
+                ),
+                past_feat_dynamic_real=(
+                    past_feat_dyn[b : b + 1] if past_feat_dyn is not None else None
+                ),
+                past_observed_feat_dynamic_real=(
+                    past_obs_feat_dyn[b : b + 1]
+                    if past_obs_feat_dyn is not None
+                    else None
+                ),
+            )
+            step_quantile_preds.append(step_q_preds)
+
+            step_point_pred = self._extract_point_prediction(step_q_preds).to(
+                device=cur_context.device, dtype=cur_context.dtype
+            )
+            cur_context = torch.cat([cur_context, step_point_pred], dim=1)[
+                :, -self.context_length :, :
+            ]
+
+        self._rollout_context = cur_context.detach()
+        return torch.cat(step_quantile_preds, dim=0)
+
     def forward(
         self,
         data: Union[Dict[str, torch.Tensor], torch.Tensor],
@@ -1119,18 +1236,21 @@ class Moirai2(CENetBase):
             past_observed_feat_dynamic_real=past_observed_feat_dynamic_real,
         )
 
-        quantile_preds = self._forward_quantiles(
-            past_target=parsed["past_target"],
-            past_observed_target=parsed["past_observed_target"],
-            past_is_pad=parsed["past_is_pad"],
-            future_target=parsed["future_target"],
-            future_observed_target=parsed["future_observed_target"],
-            future_is_pad=parsed["future_is_pad"],
-            feat_dynamic_real=parsed["feat_dynamic_real"],
-            observed_feat_dynamic_real=parsed["observed_feat_dynamic_real"],
-            past_feat_dynamic_real=parsed["past_feat_dynamic_real"],
-            past_observed_feat_dynamic_real=parsed["past_observed_feat_dynamic_real"],
-        )
+        if not self.training and self._is_autoregressive():
+            quantile_preds = self._forward_autoregressive(parsed)
+        else:
+            quantile_preds = self._forward_quantiles(
+                past_target=parsed["past_target"],
+                past_observed_target=parsed["past_observed_target"],
+                past_is_pad=parsed["past_is_pad"],
+                future_target=parsed["future_target"],
+                future_observed_target=parsed["future_observed_target"],
+                future_is_pad=parsed["future_is_pad"],
+                feat_dynamic_real=parsed["feat_dynamic_real"],
+                observed_feat_dynamic_real=parsed["observed_feat_dynamic_real"],
+                past_feat_dynamic_real=parsed["past_feat_dynamic_real"],
+                past_observed_feat_dynamic_real=parsed["past_observed_feat_dynamic_real"],
+            )
 
         point_pred = self._extract_point_prediction(quantile_preds)
         meta: Dict[str, Any] = {
@@ -1230,6 +1350,159 @@ class Moirai2(CENetBase):
             mae = abs_err.mean()
 
         return mae, {}
+
+    # ------------------------------------------------------------------
+    # Test Plotter Hooks
+    # ------------------------------------------------------------------
+
+    def _resolve_datamodule(self, datamodule: Any = None) -> Any:
+        """
+        Resolve the active :class:`~collective_encoder.datamodules.base.BaseDataModule`.
+
+        Parameters
+        ----------
+        datamodule : Any, optional
+            Explicit datamodule instance if passed directly.
+
+        Returns
+        -------
+        Any or None
+            Resolved datamodule from ``datamodule``, ``self.trainer.datamodule``,
+            or ``self.datamodule``, or ``None`` if unavailable.
+        """
+        if datamodule is not None:
+            return datamodule
+        if (
+            hasattr(self, "trainer")
+            and self.trainer is not None
+            and getattr(self.trainer, "datamodule", None) is not None
+        ):
+            return self.trainer.datamodule
+        if getattr(self, "datamodule", None) is not None:
+            return self.datamodule
+        return None
+
+    def _plot_test_start(self) -> None:
+        """
+        Initialize test plotters prior to evaluation.
+
+        For any test plotter whose class lists ``"embedding_model"`` in
+        ``_REQUIRED_ARGS`` and does not have ``"embedding_model"`` specified in its
+        configuration dictionary, attempts to extract ``embedding_model`` from the
+        active datamodule's dataset before delegating to
+        :meth:`~collective_encoder.models.base.CEModelBase._plot_test_start`.
+        """
+        self._rollout_context = None
+        dm = self._resolve_datamodule()
+        ds = (
+            dm.get_any_dataset()
+            if (dm is not None and hasattr(dm, "get_any_dataset"))
+            else None
+        )
+        dm_embedding_model = (
+            getattr(ds, "embedding_model", None) or getattr(ds, "embedding_layer", None)
+            if ds is not None
+            else None
+        )
+
+        updated_plotters = []
+        for name, args in self.test_plotters:
+            plotter_args = (args or {}).copy()
+            try:
+                plotter_cls = get_module("testplotters", name)
+                required_args = getattr(plotter_cls, "_REQUIRED_ARGS", [])
+                optional_args = getattr(plotter_cls, "_OPTIONAL_ARGS", {})
+                if (
+                    "embedding_model" in required_args
+                    and plotter_args.get("embedding_model") is None
+                    and dm_embedding_model is not None
+                ):
+                    plotter_args["embedding_model"] = dm_embedding_model
+                if (
+                    ("datamodule" in required_args or "datamodule" in optional_args)
+                    and plotter_args.get("datamodule") is None
+                    and dm is not None
+                ):
+                    plotter_args["datamodule"] = dm
+            except Exception:
+                pass
+            updated_plotters.append((name, plotter_args))
+
+        self.test_plotters = updated_plotters
+        super()._plot_test_start()
+
+    def _plot_test_batch(
+        self,
+        inp: Any,
+        latent: torch.Tensor,
+        output: torch.Tensor,
+        labels: Any,
+        meta: Dict[str, Any],
+        datamodule: Any = None,
+    ) -> None:
+        """
+        Format sequence predictions, latents, and future horizon labels into 2-D
+        frame-level tensors before forwarding to test plotters.
+
+        Parameters
+        ----------
+        inp : Any
+            Batch of input data.
+        latent : torch.Tensor
+            Context sequence tensor of shape ``(batch_size, context_length, target_dim)``.
+        output : torch.Tensor
+            Point prediction tensor of shape ``(batch_size, prediction_length, target_dim)``.
+        labels : torch.Tensor or dict
+            Per-sequence ground-truth labels.
+        meta : dict of str to Any
+            Batch metadata dictionary from :meth:`forward`.
+        datamodule : Any, optional
+            Explicit datamodule instance.
+        """
+        dm = self._resolve_datamodule(datamodule)
+        label_names = dm.get_label_names() if dm is not None else []
+        n_labels = len(label_names)
+        seq_len = int(self.context_length + self.prediction_length)
+
+        if isinstance(labels, torch.Tensor) and n_labels > 0:
+            batch_size = labels.shape[0]
+            if (
+                labels.ndim == 3
+                and labels.shape[1] >= self.context_length + self.prediction_length
+            ):
+                future_labels = labels[
+                    :,
+                    self.context_length : self.context_length + self.prediction_length,
+                    :,
+                ]
+                labels = future_labels.reshape(-1, n_labels)
+            elif labels.ndim == 2 and labels.shape[1] == seq_len * n_labels:
+                labels_3d = labels.reshape(batch_size, seq_len, n_labels)
+                future_labels = labels_3d[
+                    :,
+                    self.context_length : self.context_length + self.prediction_length,
+                    :,
+                ]
+                labels = future_labels.reshape(-1, n_labels)
+            elif (
+                labels.ndim == 2
+                and labels.shape[1] == self.prediction_length * n_labels
+            ):
+                labels = labels.reshape(-1, n_labels)
+
+        if isinstance(output, torch.Tensor) and output.ndim == 3:
+            output = output.reshape(-1, output.shape[-1])
+        if isinstance(latent, torch.Tensor) and latent.ndim == 3:
+            latent = latent.reshape(-1, latent.shape[-1])
+
+        super()._plot_test_batch(inp, latent, output, labels, meta, datamodule=dm)
+
+    def _plot_test_finish(self) -> None:
+        """
+        Finalize test plotters and reset autoregressive rollout state.
+        """
+        self._rollout_context = None
+        super()._plot_test_finish()
 
     # ------------------------------------------------------------------
     # Prediction

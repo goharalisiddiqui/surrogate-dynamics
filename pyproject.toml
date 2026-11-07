@@ -59,6 +59,7 @@ all = ["surrogate-dynamics[dev]"]
 [project.scripts]
 surrogate-dynamics-train = "surrogate_dynamics.cli:main_train"
 surrogate-dynamics-prepare = "surrogate_dynamics.cli:main_prepare_dmod"
+surrogate-dynamics-test = "surrogate_dynamics.cli:main_test"
 surrogate-dynamics-predict = "surrogate_dynamics.cli:main_predict"
 
 [project.urls]

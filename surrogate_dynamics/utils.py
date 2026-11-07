@@ -1,4 +1,216 @@
+import os
+from pathlib import Path
+from typing import Any, Optional, Tuple, Union
+
 import numpy as np
+import torch
+import torch.nn as nn
+import yaml
+
+from collective_encoder.common.module import CEModule
+from collective_encoder.common.registry import get_module
+
+
+def load_model_from_dir(module: CEModule, load_path: str) -> nn.Module:
+    """
+    Load a :class:`~collective_encoder.models.base.CEModelBase` from a run directory.
+
+    Follows the checkpoint resolution (``best.ckpt``, ``saved.ckpt``, ``last.ckpt``,
+    or first available ``.ckpt``) and ``run_config.yaml`` loading logic from
+    ``collective_encoder.ce_run_base.load_model``.
+
+    Parameters
+    ----------
+    module : CEModule
+        Caller :class:`~collective_encoder.common.module.CEModule` instance used
+        for logging, error reporting, and forwarding runtime arguments.
+    load_path : str
+        Path to the ``collective-encoder`` run directory containing ``checkpoints/``
+        and ``run_config.yaml``.
+
+    Returns
+    -------
+    torch.nn.Module
+        Loaded model instance restored from the resolved checkpoint on CPU.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the ``checkpoints`` directory or any ``.ckpt`` file is missing.
+    ValueError
+        If ``network_type`` / ``model_type`` cannot be determined.
+    """
+    ckpt_path = os.path.join(load_path, "checkpoints")
+    if not os.path.isdir(ckpt_path):
+        module.raise_error(
+            f"Checkpoint directory not found: {ckpt_path}", FileNotFoundError
+        )
+    potential_ckpts = [
+        a for a in os.listdir(ckpt_path) if a.endswith(".ckpt")
+    ]
+    if len(potential_ckpts) == 0:
+        module.raise_error(
+            f"No checkpoint found in {ckpt_path}", FileNotFoundError
+        )
+    for name in ["best", "saved", "last"]:
+        if name + ".ckpt" in potential_ckpts:
+            nn_ckpt = os.path.join(ckpt_path, name + ".ckpt")
+            break
+    else:
+        module.log_warn(
+            "No 'best', 'saved', or 'last' checkpoint found. "
+            "Using the first available checkpoint."
+        )
+        nn_ckpt = os.path.join(ckpt_path, potential_ckpts[0])
+    module.log_info("Loading network from: " + nn_ckpt)
+
+    run_config_file = os.path.join(load_path, "run_config.yaml")
+    if os.path.isfile(run_config_file):
+        with open(run_config_file, "r") as f:
+            loaded_config = yaml.safe_load(f) or {}
+        nn_type = loaded_config.get(
+            "network_type", loaded_config.get("model_type", None)
+        )
+        if nn_type is None:
+            module.raise_error(
+                "Missing 'network_type' or 'model_type' in loaded configuration."
+            )
+    else:
+        nn_type = getattr(module, "network_type", None) or getattr(
+            module, "model_type", None
+        )
+        if nn_type is None:
+            module.raise_error(
+                "'run_config.yaml' not found in the loaded model directory, "
+                "'model_type' must be specified in the current configuration "
+                "to load the model."
+            )
+
+    nn_args_saved = torch.load(
+        nn_ckpt,
+        weights_only=False,
+        map_location=torch.device("cpu"),
+    )["hyper_parameters"]["args"]
+    nn_cls = get_module("models", nn_type)
+    model = nn_cls.load_from_checkpoint(
+        nn_ckpt,
+        args=nn_args_saved,
+        map_location=torch.device("cpu"),
+        **module.get_run_args(),
+    )
+    return model
+
+
+def load_embedding_layer(
+    module: CEModule,
+    embedding_layer: Optional[Union[nn.Module, str, Path]],
+    feature_dataset: Optional[Any] = None,
+) -> Tuple[nn.Module, bool]:
+    """
+    Resolve an embedding model specification into an evaluated :class:`torch.nn.Module`.
+
+    Supports ``None`` (defaults to ``nn.Flatten(start_dim=1)`` unless ``feature_dataset``
+    is a graph dataset), an existing :class:`torch.nn.Module`, a ``collective-encoder``
+    run directory, or a path to a saved TorchScript / PyTorch module file.
+
+    Parameters
+    ----------
+    module : CEModule
+        Caller :class:`~collective_encoder.common.module.CEModule` instance used
+        for logging and error reporting.
+    embedding_layer : torch.nn.Module or str or pathlib.Path or None
+        Embedding model instance, run directory path, or file path.
+    feature_dataset : str or type or None, optional
+        Optional feature dataset identifier used to validate whether ``None`` is
+        permitted (graph datasets require an explicit embedding model).
+
+    Returns
+    -------
+    tuple of (torch.nn.Module, bool)
+        - ``model``: Resolved ``nn.Module`` in evaluation mode with frozen parameters.
+        - ``use_get_latent``: ``True`` if loaded from a ``collective-encoder`` run
+          directory (indicating ``get_latent`` / ``get_decoded`` methods are available).
+
+    Raises
+    ------
+    FileNotFoundError
+        If a provided path string does not exist.
+    ValueError
+        If ``embedding_layer`` has an unsupported type or is missing for graph datasets.
+    """
+    use_get_latent = False
+    if embedding_layer is None:
+        if feature_dataset in ("BONDGRAPH", "BONDGRAPH_LATENT"):
+            module.raise_error(
+                "Embedding layer must be provided for BONDGRAPH or BONDGRAPH_LATENT "
+                "feature datasets, as they produce graph objects instead of tensors."
+            )
+        model: nn.Module = nn.Flatten(start_dim=1)
+    elif isinstance(embedding_layer, nn.Module):
+        model = embedding_layer
+        use_get_latent = hasattr(model, "get_latent")
+    elif isinstance(embedding_layer, (str, Path, os.PathLike)):
+        path_str = str(embedding_layer)
+        if not os.path.exists(path_str):
+            module.raise_error(
+                f"Embedding layer path not found: {path_str}", FileNotFoundError
+            )
+        if os.path.isdir(path_str):
+            model = load_model_from_dir(module, path_str)
+            use_get_latent = True
+        else:
+            try:
+                model = torch.jit.load(path_str, map_location="cpu")
+            except Exception:
+                loaded = torch.load(
+                    path_str, map_location="cpu", weights_only=False
+                )
+                if not isinstance(loaded, nn.Module):
+                    module.raise_error(
+                        f"Loaded object from {path_str!r} is of type {type(loaded).__name__}, "
+                        "expected a torch.nn.Module or TorchScript module."
+                    )
+                model = loaded
+                use_get_latent = hasattr(model, "get_latent")
+    else:
+        module.raise_error(
+            f"Unsupported embedding_layer type {type(embedding_layer).__name__}. "
+            "Expected None, torch.nn.Module, or path to a saved module or model directory."
+        )
+
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+    return model, use_get_latent
+
+
+def get_model_dtype(
+    model: nn.Module, default_dtype: torch.dtype = torch.float64
+) -> torch.dtype:
+    """
+    Infer the floating-point dtype expected by ``model`` from its parameters or buffers.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        PyTorch module whose floating-point dtype should be inspected.
+    default_dtype : torch.dtype, optional
+        Fallback dtype returned if ``model`` has no floating-point parameters or buffers.
+        Defaults to ``torch.float64``.
+
+    Returns
+    -------
+    torch.dtype
+        Detected floating-point dtype of ``model``.
+    """
+    for param in model.parameters():
+        if param.is_floating_point():
+            return param.dtype
+    for buf in model.buffers():
+        if buf.is_floating_point():
+            return buf.dtype
+    return default_dtype
+
 
 def periodic_distance(x1, x2, period=2*np.pi):
     """ Compute the periodic distance between two points x1 and x2 """

@@ -21,6 +21,11 @@ from surrogate_dynamics.datamodules.atomistic_trajectory import (
     AtomisticTrajectoryDataModule,
 )
 from surrogate_dynamics.datasets.darts_timeseries import DartsTimeseriesDataset
+from surrogate_dynamics.utils import (
+    get_model_dtype,
+    load_embedding_layer,
+    load_model_from_dir,
+)
 
 
 class AtomisticDarts(DartsTimeseriesDataset):
@@ -89,7 +94,7 @@ class AtomisticDarts(DartsTimeseriesDataset):
         # Because AtomisticDarts already groups frames into sequences during __init__
         # and returns (sample_dict, label) from DartsTimeseriesDataset.__getitem__,
         # preserve AtomisticDarts.__getitem__ on WrapperDataset.
-        if cls.__name__ == "WrapperDataset":
+        if cls.__name__.startswith("Chunked"):
             cls.__getitem__ = AtomisticDarts.__getitem__
 
     def _print_init_banner(self) -> None:
@@ -212,10 +217,13 @@ class AtomisticDarts(DartsTimeseriesDataset):
 
         f_args = dict(self.feature_dataset_args or {})
         init_params = inspect.signature(feature_dataset_cls.__init__).parameters
+        
+        if 'precompute_graphs' in feature_dataset_cls._OPTIONAL_ARGS:
+            f_args.setdefault('precompute_graphs', False)
 
         call_kwargs = dict(kwargs)
         call_kwargs["args"] = f_args
-        if "dataset_args" in init_params:
+        if "dataset_args" in init_params: # Backward compatibility for datasets that expect a `dataset_args` parameter
             call_kwargs["dataset_args"] = f_args
 
         # Ensure per-frame dummy labels exist if the inner dataset requires len(labels) == len(structures)
@@ -240,67 +248,18 @@ class AtomisticDarts(DartsTimeseriesDataset):
         Load a :class:`~collective_encoder.models.base.CEModelBase` from a run directory
         following the checkpoint resolution and config loading logic in
         ``collective_encoder.ce_run_base.load_model``.
+
+        Parameters
+        ----------
+        load_path : str
+            Path to the ``collective-encoder`` run directory.
+
+        Returns
+        -------
+        torch.nn.Module
+            Loaded model instance.
         """
-        ckpt_path = os.path.join(load_path, "checkpoints")
-        if not os.path.isdir(ckpt_path):
-            self.raise_error(
-                f"Checkpoint directory not found: {ckpt_path}", FileNotFoundError
-            )
-        potential_ckpts = [
-            a for a in os.listdir(ckpt_path) if a.endswith(".ckpt")
-        ]
-        if len(potential_ckpts) == 0:
-            self.raise_error(
-                f"No checkpoint found in {ckpt_path}", FileNotFoundError
-            )
-        for name in ["best", "saved", "last"]:
-            if name + ".ckpt" in potential_ckpts:
-                nn_ckpt = os.path.join(ckpt_path, name + ".ckpt")
-                break
-        else:
-            self.log_warn(
-                "No 'best', 'saved', or 'last' checkpoint found. "
-                "Using the first available checkpoint."
-            )
-            nn_ckpt = os.path.join(ckpt_path, potential_ckpts[0])
-        self.log_info("Loading network from: " + nn_ckpt)
-
-        # Resolve the network/model type from run_config.yaml or dataset args
-        run_config_file = os.path.join(load_path, "run_config.yaml")
-        if os.path.isfile(run_config_file):
-            with open(run_config_file, "r") as f:
-                loaded_config = yaml.safe_load(f) or {}
-            nn_type = loaded_config.get(
-                "network_type", loaded_config.get("model_type", None)
-            )
-            if nn_type is None:
-                self.raise_error(
-                    "Missing 'network_type' or 'model_type' in loaded configuration."
-                )
-        else:
-            nn_type = getattr(self, "network_type", None) or getattr(
-                self, "model_type", None
-            )
-            if nn_type is None:
-                self.raise_error(
-                    "'run_config.yaml' not found in the loaded model directory, "
-                    "'model_type' must be specified in the current configuration "
-                    "to load the model."
-                )
-
-        nn_args_saved = torch.load(
-            nn_ckpt,
-            weights_only=False,
-            map_location=torch.device("cpu"),
-        )["hyper_parameters"]["args"]
-        nn_cls = get_module("models", nn_type)
-        model = nn_cls.load_from_checkpoint(
-            nn_ckpt,
-            args=nn_args_saved,
-            map_location=torch.device("cpu"),
-            **self.get_run_args(),
-        )
-        return model
+        return load_model_from_dir(self, load_path)
 
     def _load_embedding_layer(
         self, embedding_layer: Optional[Union[nn.Module, str, Path]]
@@ -311,61 +270,37 @@ class AtomisticDarts(DartsTimeseriesDataset):
         If a directory path is provided, loads the model checkpoint using the same
         resolution logic as ``collective_encoder.ce_run_base.load_model`` and marks
         it to use ``get_latent()`` for embedding.
-        """
-        self._use_get_latent: bool = False
-        if embedding_layer is None:
-            if self.feature_dataset in ("BONDGRAPH", "BONDGRAPH_LATENT"):
-                self.raise_error(
-                    "Embedding layer must be provided for BONDGRAPH or BONDGRAPH_LATENT "
-                    "feature datasets, as they produce graph objects instead of tensors."
-                )
-            model: nn.Module = nn.Flatten(start_dim=1)
-        elif isinstance(embedding_layer, nn.Module):
-            model = embedding_layer
-        elif isinstance(embedding_layer, (str, Path, os.PathLike)):
-            path_str = str(embedding_layer)
-            if not os.path.exists(path_str):
-                self.raise_error(
-                    f"Embedding layer path not found: {path_str}", FileNotFoundError
-                )
-            if os.path.isdir(path_str):
-                model = self._load_model_from_dir(path_str)
-                self._use_get_latent = True
-            else:
-                try:
-                    model = torch.jit.load(path_str, map_location="cpu")
-                except Exception:
-                    loaded = torch.load(
-                        path_str, map_location="cpu", weights_only=False
-                    )
-                    if not isinstance(loaded, nn.Module):
-                        self.raise_error(
-                            f"Loaded object from {path_str!r} is of type {type(loaded).__name__}, "
-                            "expected a torch.nn.Module or TorchScript module."
-                        )
-                    model = loaded
-        else:
-            self.raise_error(
-                f"Unsupported embedding_layer type {type(embedding_layer).__name__}. "
-                "Expected None, torch.nn.Module, or path to a saved module or model directory."
-            )
 
-        model.eval()
-        for param in model.parameters():
-            param.requires_grad = False
+        Parameters
+        ----------
+        embedding_layer : torch.nn.Module or str or pathlib.Path or None
+            Embedding model instance, run directory path, or file path.
+
+        Returns
+        -------
+        torch.nn.Module
+            Resolved model in evaluation mode with frozen parameters.
+        """
+        model, self._use_get_latent = load_embedding_layer(
+            self, embedding_layer, feature_dataset=self.feature_dataset
+        )
         return model
 
     def _get_model_dtype(self, model: nn.Module) -> torch.dtype:
         """
         Infer the floating-point dtype expected by ``model`` from its parameters/buffers.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            PyTorch module to inspect.
+
+        Returns
+        -------
+        torch.dtype
+            Floating-point dtype of ``model``.
         """
-        for param in model.parameters():
-            if param.is_floating_point():
-                return param.dtype
-        for buf in model.buffers():
-            if buf.is_floating_point():
-                return buf.dtype
-        return self.dtype
+        return get_model_dtype(model, default_dtype=self.dtype)
 
     def _encode_single_item(self, model: nn.Module, item: Any) -> torch.Tensor:
         """

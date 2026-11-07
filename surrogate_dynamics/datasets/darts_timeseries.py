@@ -21,30 +21,40 @@ class DartsTimeseriesDataset(Dataset, BaseDataset):
     transformations and covariate builders (such as :meth:`TimeSeries.diff`,
     :meth:`TimeSeries.window_transform`, :meth:`TimeSeries.add_datetime_attribute`,
     :meth:`TimeSeries.add_holidays`, relative time index, and component splitting),
-    and splits each series into context (``context_length`` / ``input_chunk_length``)
-    and prediction horizon (``prediction_length`` / ``output_chunk_length``) windows.
+    and splits each series into context (``context_length``)
+    and prediction horizon (``prediction_length``) windows.
 
     Each item returned by :meth:`__getitem__` is a tuple ``(sample_dict, label)`` where:
-    - ``sample_dict`` is a dictionary of PyTorch tensors ready for forecasting models
-      such as :class:`~surrogate_dynamics.propagators.moirai2.moirai2.Moirai2`:
-        * ``"past_target"``: ``FloatTensor`` of shape ``(context_length, target_dim)``
-        * ``"past_observed_target"``: ``BoolTensor`` of shape ``(context_length, target_dim)``
+    - ``sample_dict`` is a dictionary of PyTorch tensors ready for forecasting models:
+        * ``"past_target"``: ``FloatTensor`` of shape ``(context_length, target_dim)`` the past target values
+        * ``"past_observed_target"``: ``BoolTensor`` of shape ``(context_length, target_dim)`` 
+          indicating observed (non-NaN) values
         * ``"past_is_pad"``: ``BoolTensor`` of shape ``(context_length,)``
+          indicating whether each past time step is padding (True) or real data (False)
         * ``"future_target"``: ``FloatTensor`` of shape ``(prediction_length, target_dim)``
           (included when ``prediction_length > 0``)
+          the future target values (ground truth for forecasting)
         * ``"future_observed_target"``: ``BoolTensor`` of shape ``(prediction_length, target_dim)``
           (included when ``prediction_length > 0``)
+          indicating observed (non-NaN) values in the future target
         * ``"future_is_pad"``: ``BoolTensor`` of shape ``(prediction_length,)``
           (included when ``prediction_length > 0``)
+          indicating whether each future time step is padding (True) or real data (False)
         * ``"feat_dynamic_real"``: ``FloatTensor`` of shape
           ``(context_length + prediction_length, feat_dynamic_real_dim)`` (when present)
+          the dynamic covariate values for the full window
         * ``"observed_feat_dynamic_real"``: ``BoolTensor`` of shape
           ``(context_length + prediction_length, feat_dynamic_real_dim)`` (when present)
+            indicating observed (non-NaN) values for the dynamic covariates
         * ``"past_feat_dynamic_real"``: ``FloatTensor`` of shape
           ``(context_length, past_feat_dynamic_real_dim)`` (when present)
+          the past dynamic covariate values for the context window
         * ``"past_observed_feat_dynamic_real"``: ``BoolTensor`` of shape
           ``(context_length, past_feat_dynamic_real_dim)`` (when present)
+          indicating observed (non-NaN) values for the past dynamic covariates
         * ``"static_covariates"``: ``FloatTensor`` (when static covariates are present)
+          the static covariate values for the sample, flattened to 1-D
+          
     - ``label`` is a 1-D ``FloatTensor`` of shape ``(n_labels,)``.
     """
 

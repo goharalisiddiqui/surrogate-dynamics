@@ -51,6 +51,25 @@ def _run_prepare_dmod(args: argparse.Namespace) -> None:
     finally:
         sys.argv = original_argv
 
+def _run_test(args: argparse.Namespace) -> None:
+    """
+    Execute the test command.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+    """
+    from surrogate_dynamics.tester import main as tester
+    original_argv = sys.argv.copy()
+    try:
+        sys.argv = ['surrogate-dynamics-test', '--config', args.config]
+        if args.debug:
+            sys.argv.append('--debug')
+        tester()
+    finally:
+        sys.argv = original_argv
+
 def _run_predict(args: argparse.Namespace) -> None:
     from surrogate_dynamics.predictor import main as predict_main
 
@@ -74,6 +93,17 @@ def main_prepare_dmod() -> None:
     )
     _add_common_args(parser)
     _run_prepare_dmod(parser.parse_args())
+
+def main_test() -> None:
+    """
+    Entry point for the surrogate-dynamics-test command.
+    """
+    parser = argparse.ArgumentParser(
+        description="Test a surrogate dynamics model",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    _add_common_args(parser)
+    _run_test(parser.parse_args())
 
 
 def main_train() -> None:
@@ -108,6 +138,10 @@ def main() -> None:
     prepare_parser = subparsers.add_parser('prepare', help='Prepare data module')
     _add_common_args(prepare_parser)
     prepare_parser.set_defaults(func=_run_prepare_dmod)
+    
+    parser_test = subparsers.add_parser("test", help="Test a model")
+    _add_common_args(parser_test)
+    parser_test.set_defaults(func=_run_test)
 
     predict_parser = subparsers.add_parser("predict", help="Run predictions")
     _add_common_args(predict_parser)

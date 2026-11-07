@@ -31,7 +31,7 @@ class TimeseriesDataAnalyser(SimpleDataAnalyser):
     """
 
     _IDENTIFIER = "TIMESERIES"
-    _COMPATIBLE_DATASET_TYPES = ["TIMESERIES", "DARTS_TIMESERIES", "COLVAR"]
+    _COMPATIBLE_DATASET_TYPES = ["TIMESERIES", "DARTS_TIMESERIES", "COLVAR", "ATOMISTIC_DARTS"]
     _OPTIONAL_ARGS = SimpleDataAnalyser._OPTIONAL_ARGS | {
         "n_samples": 5,
         "max_features": 10,

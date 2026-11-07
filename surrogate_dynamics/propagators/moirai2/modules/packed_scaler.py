@@ -70,8 +70,12 @@ class PackedNOPScaler(PackedScaler):
     ) -> tuple[
         Float[torch.Tensor, "*batch 1 #dim"], Float[torch.Tensor, "*batch 1 #dim"] # pyright: ignore
     ]:
-        loc = torch.zeros_like(target, dtype=target.dtype)
-        scale = torch.ones_like(target, dtype=target.dtype)
+        loc = torch.zeros(
+            *target.shape[:-1], 1, dtype=target.dtype, device=target.device
+        )
+        scale = torch.ones(
+            *target.shape[:-1], 1, dtype=target.dtype, device=target.device
+        )
         return loc, scale
 
 
