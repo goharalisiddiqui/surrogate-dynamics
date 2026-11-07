@@ -1,0 +1,14 @@
+outfolder: "debug_dmod"
+nexp: 0
+overwrite: true
+output_to_file: True
+
+datamodule_args:
+  max_frames: 14
+  sequential: true
+  train_size: 10
+  batch_size: 2
+  validation_size: 4
+  val_batch_size: 2
+  test_full_dataset: True
+  num_workers: 1

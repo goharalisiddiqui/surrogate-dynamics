@@ -1,0 +1,20 @@
+debug: False
+outpath: ./train_runs
+outfolder: run
+overwrite: False
+nexp: 1
+output_to_file: False
+save_checkpoint: False
+save_serial_model: False
+
+# Trainer Settings
+nepochs: 50
+lrate: 0.001
+weight_decay: 0.0
+nogpu: False
+export_latent: False
+wandb: False
+wandb_project: None
+wandb_entity: None
+scheduler: False
+normIn: False
